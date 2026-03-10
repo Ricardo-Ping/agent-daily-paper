@@ -1,174 +1,105 @@
-﻿# arXiv Daily Field Digest Skill
+# agent-daily-paper
 
-一个可被 Agent 调用的 skill：
-- 用户可订阅一个或多个研究领域
-- 每天固定时间抓取 arXiv 最新论文
-- 按重要性排序推送
-- 输出中英双语（英文标题/中文标题/英文摘要/中文摘要/arXiv 链接）
-- 支持每领域独立推荐数量（5-20）
-- 支持 NEW/UPDATED 版本标识与高亮规则
-- 支持 Markdown 落盘，文件名为 `领域_日期.md`
+一个可被 Agent 调用的 arXiv 每日论文推送 Skill：
+- 用户可选择一个或多个研究领域
+- 每领域可独立设置每日推荐数量（5-20）
+- 每日固定时间推送
+- 按重要性排序
+- 输出英文标题、中文标题、英文摘要、中文摘要、arXiv 链接
+- 支持 `NEW/UPDATED` 标识、关键词高亮、Markdown 存档
+- 实际返回篇数为“最多 limit 篇”，若当日命中不足会少于 limit
 
-## 目录结构
+## 1. 首次使用必须先配置
 
-- `SKILL.md`：skill 定义与执行规范
-- `config/subscriptions.json`：订阅配置
-- `data/state.json`：去重与运行状态
-- `scripts/run_digest.py`：主执行脚本
-- `scripts/dev-shell.ps1`：UTF-8 + conda 启动脚本（PowerShell）
-- `scripts/dev-shell.cmd`：UTF-8 + conda 启动脚本（CMD）
-- `output/daily/`：每日输出的 Markdown
+首次安装或首次运行时，Agent 必须先询问并写入以下配置，再执行推送：
+- 领域（一个或多个）
+- 每领域论文数（5-20）
+- 每日提醒时间（`push_time`，HH:MM）
+- 时区（默认 `Asia/Shanghai`）
+- 可选：关键词、排除词、翻译方式
 
-## 环境准备（推荐 Conda）
+配置文件：`config/subscriptions.json`
 
-### 1) 创建并激活环境
+## 2. 为什么你之前会遇到“无内容”
 
-```powershell
+旧逻辑偏向“按 arXiv 大类字段召回”，对“数据库优化器”这类细分方向不友好。
+
+现在已改为：
+- 召回：`类别 + 标题/摘要关键词`
+- 排序：增加标题/摘要模糊匹配分数（细分词可命中）
+- 兜底：若 24h 无结果，可自动扩大时间窗并放宽关键词
+
+## 3. 输出行为（已修复）
+
+运行脚本时加 `--emit-markdown`，会在 JSON 输出中包含完整 Markdown 文本。
+
+也就是说，Agent 推送时应同时：
+- 保存 `output/daily/*.md`
+- 在聊天里直接返回完整 Markdown 内容
+
+## 4. Conda 环境安装（推荐）
+
+环境名建议：`arxiv-digest-lab`
+
+Windows / macOS / Linux 通用：
+
+```bash
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
-```
-
-### 2) 安装依赖
-
-```powershell
 pip install argostranslate
-```
-
-### 3) 安装离线翻译模型（en -> zh）
-
-```powershell
 python -c "from argostranslate import package; package.update_package_index(); p=[x for x in package.get_available_packages() if x.from_code=='en' and x.to_code=='zh'][0]; package.install_from_path(p.download())"
 ```
 
-## 一键开发终端（避免中文乱码）
+翻译提供方：
+- `TRANSLATE_PROVIDER=openai`（需 `OPENAI_API_KEY`）
+- `TRANSLATE_PROVIDER=argos`（离线免费）
+- `TRANSLATE_PROVIDER=auto`（先 OpenAI，失败后 Argos）
+- `TRANSLATE_PROVIDER=none`
 
-```powershell
-.\scripts\dev-shell.ps1
+## 5. 本地运行
+
+调试（不写文件）：
+
+```bash
+python scripts/run_digest.py --dry-run --emit-markdown
 ```
 
-或
+正式运行：
 
-```cmd
-scripts\dev-shell.cmd
+```bash
+python scripts/run_digest.py --emit-markdown
 ```
 
-这会自动：
-- 切换到 UTF-8 终端（`chcp 65001`）
-- 激活 `arxiv-digest-lab` 环境
+按配置时间执行（给定时器/CI）：
 
-## 配置说明
-
-编辑 `config/subscriptions.json`。
-
-### 核心字段
-
-- `timezone`：时区，例如 `Asia/Shanghai`
-- `push_time`：推送时间，例如 `09:00`
-- `time_window_hours`：抓取窗口，默认建议 `24`
-- `field_settings`：每领域独立配置（重点）
-  - `name`：领域名（支持中文或英文）
-  - `limit`：该领域推荐数量，范围 `5-20`
-  - `keywords`：该领域关键词
-  - `exclude_keywords`：排除词
-- `highlight`：高亮规则
-  - `title_keywords`
-  - `authors`
-  - `venues`
-
-### 示例
-
-```json
-{
-  "subscriptions": [
-    {
-      "id": "rs-db-daily",
-      "name": "RecSys + DB Daily",
-      "timezone": "Asia/Shanghai",
-      "push_time": "09:00",
-      "time_window_hours": 24,
-      "language": "zh-CN",
-      "keywords": ["retrieval", "ranking"],
-      "exclude_keywords": ["survey"],
-      "field_settings": [
-        {"name": "推荐系统", "limit": 20, "keywords": ["recommendation", "recsys"], "exclude_keywords": []},
-        {"name": "数据库", "limit": 20, "keywords": ["database", "query", "index"], "exclude_keywords": []}
-      ],
-      "highlight": {
-        "title_keywords": ["benchmark", "alignment", "RAG"],
-        "authors": ["Yann LeCun"],
-        "venues": ["ICLR", "ICML", "NeurIPS", "KDD", "SIGMOD", "VLDB"]
-      }
-    }
-  ]
-}
+```bash
+python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown
 ```
 
-## 运行方式
+## 6. GitHub Actions 定时推送
 
-### Dry-run（不写文件）
+已提供工作流：`.github/workflows/daily-digest.yml`
 
-```powershell
-$env:TRANSLATE_PROVIDER='argos'
-python scripts/run_digest.py --dry-run
-```
+机制：
+- 每 10 分钟触发一次
+- 脚本根据每个订阅的 `push_time + timezone` 判断“现在是否到点”
+- 仅在到点窗口内执行，且同一订阅每天只推送一次
+- 产物变更后自动提交 `output/daily` 和 `data/state.json`
 
-### 正式运行
+### 启用步骤
 
-```powershell
-$env:TRANSLATE_PROVIDER='argos'
-python scripts/run_digest.py
-```
+1. 将仓库推送到 GitHub（默认分支 `main`）
+2. 在仓库 `Settings -> Secrets and variables -> Actions` 配置：
+- `OPENAI_API_KEY`（可选，仅 OpenAI 翻译需要）
+- `TRANSLATE_PROVIDER`（可选，建议设为 `auto` 或 `argos`）
+3. 打开 `Actions`，启用工作流
+4. 可用 `Run workflow` 手动触发测试
 
-## 翻译提供方
+## 7. 关键文件
 
-通过环境变量 `TRANSLATE_PROVIDER` 控制：
-
-- `openai`：使用 OpenAI API（需 `OPENAI_API_KEY`）
-- `argos`：使用离线 Argos（免费）
-- `auto`：先 OpenAI，失败后 Argos
-- `none`：不翻译，输出 `[待翻译]`
-
-## 输出格式
-
-每篇论文包含：
-- English Title
-- Chinese Title
-- English Abstract
-- 中文摘要
-- arXiv URL
-- Flags（`NEW` / `UPDATED(vX->vY)` + 高亮标签）
-
-输出文件默认位于：
-- `output/daily/<领域>_<YYYY-MM-DD>.md`
-
-## 去重与版本追踪
-
-状态文件 `data/state.json`：
-- `sent_ids`：已推送论文 ID
-- `sent_versions`：论文 ID -> 版本（v1/v2/...）
-- `last_run_at`：上次运行时间
-
-行为：
-- 新论文标记 `NEW`
-- 已推送但版本升级标记 `UPDATED(v旧->v新)`
-- 已推送且版本未变默认不重复推送
-
-## 常见问题
-
-### 1) 输出中文乱码
-- 用 `scripts/dev-shell.ps1` 启动
-- 确认终端是 `chcp 65001`
-
-### 2) 出现 `[待翻译]`
-- 检查 `TRANSLATE_PROVIDER`
-- 若用 `openai`，检查 `OPENAI_API_KEY`
-- 若用 `argos`，检查 en->zh 模型是否已安装
-
-### 3) 没有结果
-- 扩大 `time_window_hours`
-- 放宽 `keywords`
-- 减少 `exclude_keywords`
-
-## License
-
-MIT
+- `SKILL.md`：Skill 行为规范（中文）
+- `agents/openai.yaml`：Skill 元信息
+- `scripts/run_digest.py`：主逻辑（模糊匹配、到点执行、完整 Markdown 输出）
+- `config/subscriptions.json`：订阅配置
+- `data/state.json`：去重状态与每日推送状态
+- `output/daily/`：每日 Markdown 归档

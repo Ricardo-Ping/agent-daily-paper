@@ -2,14 +2,16 @@
 """Daily arXiv digest runner.
 
 Core features:
-- User-selectable one or multiple fields
+- Multi-field subscription
 - Per-field independent limit (5-20)
 - Importance ranking
 - Optional grouping by field (only when multiple fields)
 - Bilingual output (EN + ZH)
-- NEW / UPDATED status by arXiv version tracking
+- NEW / UPDATED status via arXiv version tracking
 - Highlight rules (title keywords / authors / venues)
 - Translation providers: OpenAI API or offline Argos Translate
+- Optional empty-result fallback window
+- Optional full markdown emission in stdout JSON
 """
 
 from __future__ import annotations
@@ -47,15 +49,15 @@ FIELD_TO_CATEGORIES = {
     "robotics": ["cs.RO"],
     "ai safety": ["cs.AI"],
     "multimodal": ["cs.CV", "cs.CL", "cs.AI"],
-    "\u56fe\u50cf": ["cs.CV"],
-    "\u8ba1\u7b97\u673a\u89c6\u89c9": ["cs.CV"],
-    "\u81ea\u7136\u8bed\u8a00\u5904\u7406": ["cs.CL"],
-    "\u5927\u6a21\u578b": ["cs.CL", "cs.LG"],
-    "\u673a\u5668\u5b66\u4e60": ["cs.LG", "stat.ML"],
-    "\u5f3a\u5316\u5b66\u4e60": ["cs.LG", "cs.AI"],
-    "\u673a\u5668\u4eba": ["cs.RO"],
-    "\u63a8\u8350\u7cfb\u7edf": ["cs.IR", "cs.LG"],
-    "\u6570\u636e\u5e93": ["cs.DB"],
+    "图像": ["cs.CV"],
+    "计算机视觉": ["cs.CV"],
+    "自然语言处理": ["cs.CL"],
+    "大模型": ["cs.CL", "cs.LG"],
+    "机器学习": ["cs.LG", "stat.ML"],
+    "强化学习": ["cs.LG", "cs.AI"],
+    "机器人": ["cs.RO"],
+    "推荐系统": ["cs.IR", "cs.LG"],
+    "数据库": ["cs.DB"],
 }
 
 
@@ -119,8 +121,45 @@ def normalize_field_to_categories(field_name: str) -> list[str]:
     lowered = field_name.strip().lower()
     if lowered in FIELD_TO_CATEGORIES:
         return FIELD_TO_CATEGORIES[lowered]
+    # Heuristics for sub-fields that are not exact dictionary keys.
+    if "数据库" in field_name or "database" in lowered:
+        return ["cs.DB"]
+    if "优化器" in field_name or "optimizer" in lowered:
+        return ["cs.DB"]
+    if "推荐" in field_name or "recsys" in lowered or "recommend" in lowered:
+        return ["cs.IR", "cs.LG"]
+    if "查询" in field_name or "query" in lowered:
+        return ["cs.DB"]
     categories = re.findall(r"\b[a-z]{2,}\.[A-Z]{2}\b", field_name)
     return categories or ["cs.AI"]
+
+
+def infer_terms_from_field(field_name: str) -> list[str]:
+    lowered = field_name.strip().lower()
+    terms: list[str] = []
+    if "数据库" in field_name or "database" in lowered or "db" in lowered:
+        terms.extend(["database", "query"])
+    if "优化器" in field_name or "optimizer" in lowered:
+        terms.extend(["optimizer", "query optimizer", "cost model", "execution plan", "join order"])
+    if "查询" in field_name or "query" in lowered:
+        terms.extend(["query", "query optimization", "cardinality estimation"])
+    if "推荐" in field_name or "recsys" in lowered or "recommend" in lowered:
+        terms.extend(["recommendation", "recommender", "ranking"])
+    return list(dict.fromkeys(terms))
+
+
+def expand_keywords_for_query(keywords: list[str]) -> list[str]:
+    out: list[str] = []
+    for kw in keywords:
+        k = kw.strip()
+        if not k:
+            continue
+        out.append(k)
+        # Split phrase keywords to improve recall.
+        if " " in k:
+            parts = [p.strip() for p in k.split() if len(p.strip()) >= 4]
+            out.extend(parts)
+    return list(dict.fromkeys(out))
 
 
 def parse_field_settings(sub: dict[str, Any]) -> list[FieldSetting]:
@@ -141,30 +180,35 @@ def parse_field_settings(sub: dict[str, Any]) -> list[FieldSetting]:
         if out:
             return out
 
-    # Backward compatible fallback from fields + daily_count
     fields = [str(x).strip() for x in sub.get("fields", []) if str(x).strip()]
     limit = clamp_limit(sub.get("daily_count", 10))
     return [FieldSetting(name=f, limit=limit) for f in fields]
 
 
-def build_search_query(categories: list[str], keywords: list[str]) -> str:
+def build_search_query(categories: list[str], keywords: list[str], strict: bool = False) -> str:
     cat_query = " OR ".join(f"cat:{c}" for c in sorted(set(categories)))
-    if not keywords:
+    if not keywords and cat_query:
         return f"({cat_query})"
+    if not keywords and not cat_query:
+        return "all:*"
 
     kw_clauses = []
     for kw in keywords:
         safe = kw.replace('"', "")
         kw_clauses.append(f'ti:"{safe}"')
         kw_clauses.append(f'abs:"{safe}"')
-    return f"({cat_query}) AND ({' OR '.join(kw_clauses)})"
+    kw_query = f"({' OR '.join(kw_clauses)})"
+    if not cat_query:
+        return kw_query
+    connector = "AND" if strict else "OR"
+    return f"({cat_query}) {connector} {kw_query}"
 
 
 def http_get(url: str, params: dict[str, Any], retries: int = 2) -> str:
     full_url = f"{url}?{urlencode(params)}"
     for attempt in range(retries + 1):
         try:
-            req = Request(full_url, headers={"User-Agent": "arxiv-daily-field-digest/1.0"})
+            req = Request(full_url, headers={"User-Agent": "agent-daily-paper/1.0"})
             with urlopen(req, timeout=25) as resp:
                 return resp.read().decode("utf-8", errors="replace")
         except Exception:
@@ -240,18 +284,72 @@ def contains_any(text: str, terms: list[str]) -> bool:
     return any(term.lower() in lowered for term in terms)
 
 
-def score_paper(p: Paper, categories: list[str], keywords: list[str], now_utc: datetime) -> float:
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9\u4e00-\u9fff]+", text.lower()))
+
+
+def _fuzzy_term_score(text: str, terms: list[str]) -> float:
+    text_l = text.lower()
+    text_tokens = _tokenize(text_l)
+    score = 0.0
+    for t in terms:
+        tt = t.strip().lower()
+        if not tt:
+            continue
+        if tt in text_l:
+            score += 1.0
+            continue
+        t_tokens = _tokenize(tt)
+        if not t_tokens:
+            continue
+        overlap = len(t_tokens.intersection(text_tokens)) / max(1, len(t_tokens))
+        if overlap >= 0.5:
+            score += 0.5
+    return score
+
+
+def score_paper(
+    p: Paper,
+    categories: list[str],
+    keywords: list[str],
+    field_name: str,
+    now_utc: datetime,
+) -> float:
     age_hours = max(0.0, (now_utc - p.updated).total_seconds() / 3600)
     recency = max(0.0, 30.0 - age_hours)
-
     cat_hits = len(set(categories).intersection(set(p.categories)))
     field_score = cat_hits * 25.0
-
     text = f"{p.title_en} {p.abstract_en}".lower()
     kw_hits = sum(1 for kw in keywords if kw.lower() in text)
     keyword_score = kw_hits * 12.0
+    fuzzy_score = _fuzzy_term_score(text, [field_name] + keywords) * 8.0
+    return recency + field_score + keyword_score + fuzzy_score
 
-    return recency + field_score + keyword_score
+
+def should_keep_for_specific_field(
+    paper: Paper,
+    field_name: str,
+    keywords: list[str],
+    has_exact_mapping: bool,
+) -> bool:
+    # For custom fine-grained fields (e.g. "数据库优化器"), require at least
+    # one explicit keyword hit or fuzzy overlap in title/abstract.
+    if has_exact_mapping:
+        return True
+    text = f"{paper.title_en} {paper.abstract_en}".lower()
+    field_l = field_name.lower()
+    if ("数据库" in field_name or "database" in field_l or "db" in field_l) and (
+        "优化器" in field_name or "optimizer" in field_l
+    ):
+        db_terms = ["database", "sql", "relational", "query", "join", "index", "cardinality"]
+        opt_terms = ["optimizer", "optimization", "cost model", "execution plan", "query plan"]
+        has_db = any(t in text for t in db_terms)
+        has_opt = any(t in text for t in opt_terms)
+        return has_db and has_opt
+
+    kw_hits = sum(1 for kw in keywords if kw and kw.lower() in text)
+    fuzzy_hits = _fuzzy_term_score(text, [field_name] + keywords)
+    return kw_hits > 0 or fuzzy_hits > 0
 
 
 def _extract_json_from_text(text: str) -> dict[str, Any] | None:
@@ -277,17 +375,11 @@ def _openai_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None
         "input": [
             {
                 "role": "system",
-                "content": [{
-                    "type": "input_text",
-                    "text": "Translate to Simplified Chinese and return JSON with title_zh and abstract_zh.",
-                }],
+                "content": [{"type": "input_text", "text": "Translate to Simplified Chinese and return JSON with title_zh and abstract_zh."}],
             },
             {
                 "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": json.dumps({"title_en": title_en, "abstract_en": abstract_en}, ensure_ascii=False),
-                }],
+                "content": [{"type": "input_text", "text": json.dumps({"title_en": title_en, "abstract_en": abstract_en}, ensure_ascii=False)}],
             },
         ],
     }
@@ -295,10 +387,7 @@ def _openai_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None
     req = Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
 
@@ -317,7 +406,6 @@ def _openai_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None
     obj = _extract_json_from_text("\n".join(chunks).strip())
     if not obj:
         return None
-
     title_zh = str(obj.get("title_zh", "")).strip()
     abstract_zh = str(obj.get("abstract_zh", "")).strip()
     if not title_zh or not abstract_zh:
@@ -411,6 +499,8 @@ def render_markdown(
     candidate_count: int,
     generated_at: datetime,
     by_field: dict[str, list[Paper]],
+    used_window_hours: int,
+    used_fallback: bool,
 ) -> str:
     tz_name = sub.get("timezone", "Asia/Shanghai")
     local_now = to_local(generated_at, tz_name)
@@ -420,11 +510,13 @@ def render_markdown(
         f"# arXiv Daily Digest ({local_now.strftime('%Y-%m-%d')})",
         "",
         f"- Fields: {', '.join(field_names)}",
-        f"- Window: Last {sub.get('time_window_hours', 24)} hours",
+        f"- Window: Last {used_window_hours} hours",
         f"- Candidates / Selected: {candidate_count} / {len(selected)}",
         "- Sorted by: importance score (field match + keyword match + recency)",
-        "",
     ]
+    if used_fallback:
+        lines.append("- Fallback: Enabled (expanded window and optional keyword relaxation)")
+    lines.append("")
 
     def block(i: int, p: Paper) -> list[str]:
         authors = p.authors[:3]
@@ -478,6 +570,31 @@ def sanitize_filename(name: str) -> str:
     return cleaned or "digest"
 
 
+def subscription_key(sub: dict[str, Any]) -> str:
+    return str(sub.get("id") or sub.get("name") or "digest").strip()
+
+
+def _parse_push_time(value: str) -> tuple[int, int]:
+    raw = (value or "09:00").strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+    if not m:
+        return 9, 0
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return 9, 0
+    return hh, mm
+
+
+def is_due_now(sub: dict[str, Any], now_utc: datetime, window_minutes: int) -> tuple[bool, str]:
+    tz_name = sub.get("timezone", "Asia/Shanghai")
+    now_local = to_local(now_utc, tz_name)
+    hh, mm = _parse_push_time(str(sub.get("push_time", "09:00")))
+    target_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    diff_min = (now_local - target_local).total_seconds() / 60.0
+    due = 0 <= diff_min < max(1, int(window_minutes))
+    return due, now_local.strftime("%Y-%m-%d")
+
+
 def pick_best_by_id(candidates: list[Paper]) -> list[Paper]:
     best: dict[str, Paper] = {}
     for p in candidates:
@@ -487,9 +604,18 @@ def pick_best_by_id(candidates: list[Paper]) -> list[Paper]:
     return list(best.values())
 
 
-def run_subscription(sub: dict[str, Any], state: dict[str, Any], output_dir: Path, dry_run: bool = False) -> dict[str, Any]:
+def run_subscription(
+    sub: dict[str, Any],
+    state: dict[str, Any],
+    output_dir: Path,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     now_utc = datetime.now(timezone.utc)
     time_window_hours = int(sub.get("time_window_hours", 24))
+    fallback_when_empty = bool(sub.get("fallback_when_empty", True))
+    fallback_time_window_hours = int(sub.get("fallback_time_window_hours", max(72, time_window_hours)))
+    fallback_relax_keywords = bool(sub.get("fallback_relax_keywords", True))
+
     global_keywords = [str(x).strip() for x in sub.get("keywords", []) if str(x).strip()]
     global_excludes = [str(x).strip() for x in sub.get("exclude_keywords", []) if str(x).strip()]
     highlight = sub.get("highlight", {}) if isinstance(sub.get("highlight"), dict) else {}
@@ -501,59 +627,84 @@ def run_subscription(sub: dict[str, Any], state: dict[str, Any], output_dir: Pat
     sent_versions = state.get("sent_versions", {})
     if not isinstance(sent_versions, dict):
         sent_versions = {}
-
     legacy_sent_ids = set(state.get("sent_ids", []))
 
-    all_selected: list[Paper] = []
-    by_field: dict[str, list[Paper]] = {f.name: [] for f in field_settings}
-    total_candidates = 0
+    def collect(window_hours: int, relax_keywords: bool) -> tuple[list[Paper], dict[str, list[Paper]], int]:
+        all_selected: list[Paper] = []
+        by_field: dict[str, list[Paper]] = {f.name: [] for f in field_settings}
+        total_candidates = 0
 
-    for fs in field_settings:
-        cats = normalize_field_to_categories(fs.name)
-        keywords = list(dict.fromkeys(global_keywords + fs.keywords))
-        excludes = list(dict.fromkeys(global_excludes + fs.exclude_keywords))
-
-        query = build_search_query(cats, keywords)
-        # Pull extra candidates so ranking/filters still have room.
-        fetch_size = max(50, fs.limit * 8)
-        papers = fetch_arxiv_papers(query, source_field=fs.name, max_results=fetch_size)
-        candidates = [p for p in papers if within_hours(p, time_window_hours, now_utc)]
-
-        if excludes:
-            candidates = [p for p in candidates if not contains_any(f"{p.title_en} {p.abstract_en}", excludes)]
-
-        # Score and status (NEW/UPDATED). Skip unchanged already-sent papers.
-        scored: list[Paper] = []
-        for p in candidates:
-            prev_v = sent_versions.get(p.arxiv_id)
-            if prev_v is None and p.arxiv_id in legacy_sent_ids:
-                prev_v = "v1"
-
-            if prev_v is None:
-                p.status = "NEW"
-            elif prev_v != p.version:
-                p.status = f"UPDATED({prev_v}->{p.version})"
+        for fs in field_settings:
+            cats = normalize_field_to_categories(fs.name)
+            lowered_name = fs.name.strip().lower()
+            has_exact_mapping = lowered_name in FIELD_TO_CATEGORIES
+            inferred_terms = infer_terms_from_field(fs.name)
+            if relax_keywords:
+                keywords: list[str] = [fs.name] + inferred_terms
             else:
-                continue
+                keywords = list(dict.fromkeys(global_keywords + fs.keywords + [fs.name] + inferred_terms))
+            excludes = list(dict.fromkeys(global_excludes + fs.exclude_keywords))
 
-            p.score = score_paper(p, cats, keywords, now_utc)
-            p.highlight_tags = build_highlight_tags(p, highlight)
-            scored.append(p)
+            strict_query = bool(sub.get("strict_query", False))
+            query = build_search_query(cats, expand_keywords_for_query(keywords), strict=strict_query)
+            fetch_size = max(50, fs.limit * 8)
+            papers = fetch_arxiv_papers(query, source_field=fs.name, max_results=fetch_size)
+            candidates = [p for p in papers if within_hours(p, window_hours, now_utc)]
 
-        total_candidates += len(scored)
+            if excludes:
+                candidates = [p for p in candidates if not contains_any(f"{p.title_en} {p.abstract_en}", excludes)]
 
-        scored.sort(key=lambda x: x.score, reverse=True)
-        selected_field = pick_best_by_id(scored)[: fs.limit]
-        by_field[fs.name] = selected_field
-        all_selected.extend(selected_field)
+            scored: list[Paper] = []
+            for p in candidates:
+                if not should_keep_for_specific_field(p, fs.name, keywords, has_exact_mapping=has_exact_mapping):
+                    continue
+                prev_v = sent_versions.get(p.arxiv_id)
+                if prev_v is None and p.arxiv_id in legacy_sent_ids:
+                    prev_v = "v1"
 
-    # Global de-duplication across fields: keep highest score assignment.
-    deduped = pick_best_by_id(all_selected)
-    deduped.sort(key=lambda x: x.score, reverse=True)
+                if prev_v is None:
+                    p.status = "NEW"
+                elif prev_v != p.version:
+                    p.status = f"UPDATED({prev_v}->{p.version})"
+                else:
+                    continue
 
-    by_field = {f.name: [] for f in field_settings}
-    for p in deduped:
-        by_field.setdefault(p.source_field, []).append(p)
+                p.score = score_paper(p, cats, keywords, fs.name, now_utc)
+                p.highlight_tags = build_highlight_tags(p, highlight)
+                scored.append(p)
+
+            total_candidates += len(scored)
+            scored.sort(key=lambda x: x.score, reverse=True)
+            selected_field = pick_best_by_id(scored)[: fs.limit]
+            by_field[fs.name] = selected_field
+            all_selected.extend(selected_field)
+
+        deduped = pick_best_by_id(all_selected)
+        deduped.sort(key=lambda x: x.score, reverse=True)
+
+        by_field_clean: dict[str, list[Paper]] = {f.name: [] for f in field_settings}
+        for p in deduped:
+            by_field_clean.setdefault(p.source_field, []).append(p)
+
+        return deduped, by_field_clean, total_candidates
+
+    deduped, by_field, total_candidates = collect(window_hours=time_window_hours, relax_keywords=False)
+    used_window_hours = time_window_hours
+    used_fallback = False
+    target_total = sum(fs.limit for fs in field_settings)
+
+    should_fallback = (
+        fallback_when_empty
+        and fallback_time_window_hours > time_window_hours
+        and len(deduped) < target_total
+    )
+    if should_fallback:
+        deduped, by_field, total_candidates = collect(
+            window_hours=fallback_time_window_hours,
+            relax_keywords=fallback_relax_keywords,
+        )
+        used_window_hours = fallback_time_window_hours
+        used_fallback = True
 
     translation_stats = {"openai": 0, "argos": 0, "none": 0}
     for p in deduped:
@@ -566,6 +717,8 @@ def run_subscription(sub: dict[str, Any], state: dict[str, Any], output_dir: Pat
         candidate_count=total_candidates,
         generated_at=now_utc,
         by_field=by_field,
+        used_window_hours=used_window_hours,
+        used_fallback=used_fallback,
     )
 
     date_label = now_utc.strftime("%Y-%m-%d")
@@ -588,15 +741,39 @@ def run_subscription(sub: dict[str, Any], state: dict[str, Any], output_dir: Pat
         "selected_count": len(deduped),
         "candidate_count": total_candidates,
         "translation_stats": translation_stats,
+        "used_window_hours": used_window_hours,
+        "used_fallback": used_fallback,
+        "markdown": markdown,
     }
 
 
 def main() -> int:
+    # Avoid Windows GBK console crashes when emitting multilingual markdown.
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="Run arXiv daily digest.")
     parser.add_argument("--config", default="config/subscriptions.json")
     parser.add_argument("--state", default="data/state.json")
     parser.add_argument("--output-dir", default="output/daily")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--emit-markdown", action="store_true", help="Include full markdown in stdout JSON")
+    parser.add_argument(
+        "--only-due-now",
+        action="store_true",
+        help="Run only subscriptions whose local push_time is within due window",
+    )
+    parser.add_argument(
+        "--due-window-minutes",
+        type=int,
+        default=15,
+        help="Allowed minutes after push_time when --only-due-now is enabled",
+    )
     args = parser.parse_args()
 
     config = load_json(Path(args.config), default={"subscriptions": []})
@@ -608,14 +785,49 @@ def main() -> int:
         return 1
 
     results = []
+    last_push_date_by_sub = state.get("last_push_date_by_sub", {})
+    if not isinstance(last_push_date_by_sub, dict):
+        last_push_date_by_sub = {}
+
+    now_utc = datetime.now(timezone.utc)
     for sub in subs:
+        sub_key = subscription_key(sub)
+        if args.only_due_now:
+            due, local_date = is_due_now(sub, now_utc, args.due_window_minutes)
+            if not due:
+                results.append(
+                    {
+                        "subscription": sub_key,
+                        "skipped": True,
+                        "reason": "not_due_time",
+                    }
+                )
+                continue
+            if last_push_date_by_sub.get(sub_key) == local_date:
+                results.append(
+                    {
+                        "subscription": sub_key,
+                        "skipped": True,
+                        "reason": "already_pushed_today",
+                    }
+                )
+                continue
         try:
-            results.append(run_subscription(sub, state, Path(args.output_dir), dry_run=args.dry_run))
+            res = run_subscription(sub, state, Path(args.output_dir), dry_run=args.dry_run)
+            results.append(res)
+            if not args.dry_run:
+                _, local_date = is_due_now(sub, now_utc, args.due_window_minutes)
+                last_push_date_by_sub[sub_key] = local_date
         except Exception as exc:
             print(f"[ERROR] Subscription failed ({sub.get('name', 'unknown')}): {exc}")
 
     if not args.dry_run:
+        state["last_push_date_by_sub"] = last_push_date_by_sub
         save_json(Path(args.state), state)
+
+    if not args.emit_markdown:
+        for r in results:
+            r.pop("markdown", None)
 
     print(json.dumps({"dry_run": args.dry_run, "results": results}, ensure_ascii=False, indent=2))
     return 0 if results else 1
