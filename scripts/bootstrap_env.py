@@ -49,6 +49,7 @@ def install_packages(
     root: Path,
     skip_argos_model: bool,
     skip_embedding_model: bool,
+    skip_taxonomy_sync: bool,
 ) -> None:
     print("[BOOTSTRAP] Installing python packages in env...")
     run([conda, "run", "-n", env_name, "python", "-m", "pip", "install", "--upgrade", "pip"], cwd=root)
@@ -70,8 +71,32 @@ def install_packages(
         )
         if proc.returncode != 0:
             print("[BOOTSTRAP][WARN] Embedding model preload failed, will download on first run.")
+        print("[BOOTSTRAP] Preloading reranker model (BAAI/bge-reranker-v2-m3)...")
+        proc = run(
+            [
+                conda, "run", "-n", env_name, "python", "scripts/install_embedding_model.py",
+                "--kind", "reranker",
+                "--model", "BAAI/bge-reranker-v2-m3",
+            ],
+            cwd=root,
+            check=False,
+        )
+        if proc.returncode != 0:
+            print("[BOOTSTRAP][WARN] Reranker model preload failed, will download on first run.")
     else:
         print("[BOOTSTRAP] Skipping embedding model preload by flag.")
+
+    if not skip_taxonomy_sync:
+        print("[BOOTSTRAP] Syncing local arXiv taxonomy knowledge base...")
+        proc = run(
+            [conda, "run", "-n", env_name, "python", "scripts/sync_arxiv_taxonomy.py", "--output", "data/arxiv_taxonomy.json"],
+            cwd=root,
+            check=False,
+        )
+        if proc.returncode != 0:
+            print("[BOOTSTRAP][WARN] Taxonomy sync failed, can retry with: python scripts/sync_arxiv_taxonomy.py")
+    else:
+        print("[BOOTSTRAP] Skipping taxonomy sync by flag.")
 
 
 def ensure_file_from_template(dst: Path, src: Path) -> None:
@@ -126,6 +151,7 @@ def main() -> int:
     parser.add_argument("--python-version", default="3.10")
     parser.add_argument("--skip-argos-model", action="store_true")
     parser.add_argument("--skip-embedding-model", action="store_true")
+    parser.add_argument("--skip-taxonomy-sync", action="store_true")
     parser.add_argument("--run-doctor", action="store_true")
     args = parser.parse_args()
 
@@ -140,6 +166,7 @@ def main() -> int:
             root,
             args.skip_argos_model,
             args.skip_embedding_model,
+            args.skip_taxonomy_sync,
         )
     except Exception as exc:
         print(f"[BOOTSTRAP][ERROR] {exc}")

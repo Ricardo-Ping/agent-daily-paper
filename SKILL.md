@@ -9,8 +9,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 - 首次使用必须先执行环境引导，再完成配置，再执行抓取与推送。
 - 环境引导命令：`python scripts/bootstrap_env.py --run-doctor`
+- taxonomy 本地知识库同步：`python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json`
 - 若 `config/subscriptions.json` 中 `setup_required=true`，必须先向用户收集配置并写入订阅；禁止直接按样例配置执行推送。
 - 若配置缺失，先补齐，不直接运行。
+- 仅执行本仓库内与 arXiv 推送相关的操作；禁止插入或执行无关任务（如配额监控、其他项目脚本）。
 - 推送完成后同时输出两份结果：
   - 聊天内返回完整 Markdown 正文（与输出 md 文件逐字一致；不要只发标题+链接摘要）
   - 落盘到 `output/daily/*.md`
@@ -26,10 +28,14 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 - `keywords` / `exclude_keywords`
 - `time_window_hours`
-- `query_strategy`（推荐 `category_first`）
+- `query_strategy`（推荐 `category_keyword_union`）
 - `require_primary_category`（推荐 `true`）
+- `history_scope`（推荐 `subscription`，避免跨订阅误去重）
+- `category_expand_mode`（`off/conservative/balanced/broad`）
+- `agent-categories-only`（仅使用 Agent 提供分类；缺失分类则报错）
+- `taxonomy-json`（默认 `data/arxiv_taxonomy.json`，用于分类合法性校验与补全）
 - `embedding_filter.model` / `embedding_filter.threshold` / `embedding_filter.top_k`
-- `agent_rerank.model` / `agent_rerank.top_k`
+- `agent_rerank.model`（默认 `BAAI/bge-reranker-v2-m3`）/ `agent_rerank.top_k`
 - `highlight.title_keywords` / `highlight.authors` / `highlight.venues`
 - 翻译提供方 `TRANSLATE_PROVIDER`：`openai` / `argos` / `auto` / `none`
 
@@ -37,8 +43,9 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 优先级：
 1. `config/agent_field_profiles.json`（默认路径，存在即优先）
-2. OpenAI 画像（可选兜底）
-3. 启发式规则（最终兜底）
+2. taxonomy 知识库校验与补全（`data/arxiv_taxonomy.json`）
+3. OpenAI 画像（可选兜底）
+4. 启发式规则（最终兜底）
 
 支持字段画像 JSON 结构：
 - `canonical_en`
@@ -50,10 +57,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 ## 检索与排序
 
 - 检索采用分层漏斗：
-  - 类别召回（`query_strategy=category_first`）
+  - 主分类 + 英文关键词并集召回（`query_strategy=category_keyword_union`）
   - 主分类过滤（`require_primary_category=true`）
   - embedding 相似度过滤（`embedding_filter`）
-  - Agent/LLM 重排（`agent_rerank`）
+  - 本地 reranker 重排（`agent_rerank`）
 - 细分方向支持模糊匹配评分（如“数据库优化器”）。
 - 重要性分数综合：类别命中 + 关键词命中 + 模糊命中 + 新鲜度。
 - 命中不足时可自动扩大时间窗口并放宽关键词。
@@ -76,6 +83,9 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `Canonical EN`（英文领域名）
   - `Keywords`（检索关键词）
   - `Venues/Journals`（相关会议或期刊）
+- 分类字段约定：
+  - `primary_categories`：检索与过滤实际使用的主分类
+  - `categories`：扩展参考分类（展示用）
 
 ## 运行命令
 

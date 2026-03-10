@@ -10,6 +10,7 @@
 
 核心能力：
 - 多领域订阅与每领域独立数量上限（5-20）
+- 本地 `arXiv taxonomy` 知识库（`data/arxiv_taxonomy.json`），用于领域分类校验与补全
 - 输出英文标题、中文标题、英文摘要、中文摘要、arXiv 链接
 - 日报头部输出领域画像：英文领域名、关键词、相关会议/期刊
 - `NEW/UPDATED` 标记与 Markdown 归档
@@ -31,7 +32,7 @@ flowchart TB
     P1 --> M{"运行模式"}:::decision
 
     subgraph R1["即时推送路径"]
-      Q1["Category Recall<br/>query_strategy=category_first"]:::process
+      Q1["Category Recall + Keyword Union<br/>query_strategy=category_keyword_union"]:::process
       Q2["Primary Category Filter<br/>require_primary_category=true"]:::process
       Q3["Embedding Filter<br/>BAAI/bge-m3 + threshold + top_k"]:::model
       Q4["Agent Rerank<br/>model + top_k"]:::model
@@ -86,6 +87,8 @@ conda activate arxiv-digest-lab
 pip install argostranslate sentence-transformers
 python scripts/install_argos_model.py
 python scripts/install_embedding_model.py --model BAAI/bge-m3
+python scripts/install_embedding_model.py --kind reranker --model BAAI/bge-reranker-v2-m3
+python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json
 ```
 
 翻译提供方：
@@ -118,6 +121,7 @@ python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --li
 
 默认读取 `config/agent_field_profiles.json` 作为 Agent 字段画像输入（首次安装后应完成该文件配置）。
 默认输出“完整 Markdown 正文到聊天（与 `output/daily/*.md` 文件内容一致）”，并同时落盘到 `output/daily/*.md`。
+默认使用忽略历史模式，避免首次配置被旧状态误拦截；如需按历史去重可加 `--respect-history`。
 
 ### 分步执行
 
@@ -149,6 +153,15 @@ python scripts/prepare_fields.py --fields "数据库优化器" --profiles-json c
 python scripts/run_digest.py --config config/subscriptions.instant.json --emit-markdown
 ```
 
+## arXiv Taxonomy 本地知识库（默认接入）
+
+- 同步脚本：`python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json`
+- `prepare_fields.py` 默认读取 `data/arxiv_taxonomy.json`（可用 `--taxonomy-json` 覆盖）
+- 作用：
+  - 校验 Agent 给出的分类 code（非法 code 会被过滤）
+  - 在未提供分类时，基于 taxonomy 做候选分类补全
+  - 保证最终 `subscriptions.json` 使用 arXiv 合法分类
+
 首次可通过模板初始化：
 
 ```bash
@@ -162,17 +175,21 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
 ## 相关性漏斗（推荐）
 
 推荐启用四层过滤：
-1. `query_strategy=category_first`（先按 arXiv 分类召回）
+1. `query_strategy=category_keyword_union`（主分类 + 英文关键词并集召回）
 2. `require_primary_category=true`（仅保留主分类命中）
 3. `embedding_filter`（本地向量相似度过滤）
-4. `agent_rerank`（Agent/LLM 语义重排）
+4. `agent_rerank`（本地语义重排，默认 `BAAI/bge-reranker-v2-m3`）
+5. `history_scope=subscription`（按订阅隔离去重）
+6. `category_expand_mode`（`off/conservative/balanced/broad`）
 
 `subscriptions.json` 示例：
 
 ```json
 {
-  "query_strategy": "category_first",
+  "query_strategy": "category_keyword_union",
   "require_primary_category": true,
+  "history_scope": "subscription",
+  "category_expand_mode": "balanced",
   "embedding_filter": {
     "enabled": true,
     "model": "BAAI/bge-m3",
@@ -181,11 +198,21 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
   },
   "agent_rerank": {
     "enabled": true,
-    "model": "gpt-4.1-mini",
+    "model": "BAAI/bge-reranker-v2-m3",
     "top_k": 40
   }
 }
 ```
+
+如果你希望“完全由 Agent 确认分类，不允许脚本猜分类”，可用：
+
+```bash
+python scripts/instant_digest.py --fields "推荐系统" --agent-categories-only --category-expand-mode off
+```
+
+分类字段说明：
+- `primary_categories`：实际检索与主分类过滤使用的分类集合（核心）
+- `categories`：扩展后的参考分类信息（用于画像展示与候选补充，不直接替代主分类约束）
 
 ## 定时推送（GitHub Actions）
 

@@ -9,8 +9,10 @@
       "fallback_when_empty": true,
       "fallback_time_window_hours": 168,
       "fallback_relax_keywords": true,
-      "query_strategy": "category_first",
+      "query_strategy": "category_keyword_union",
       "require_primary_category": true,
+      "history_scope": "subscription",
+      "category_expand_mode": "balanced",
       "embedding_filter": {
         "enabled": true,
         "model": "BAAI/bge-m3",
@@ -19,14 +21,15 @@
       },
       "agent_rerank": {
         "enabled": true,
-        "model": "gpt-4.1-mini",
+        "model": "BAAI/bge-reranker-v2-m3",
         "top_k": 40
       },
       "field_settings": [
         {
           "name": "数据库优化器",
           "limit": 20,
-          "categories": ["cs.DB"],
+          "categories": ["cs.DB", "cs.LG", "cs.AI"],
+          "primary_categories": ["cs.DB", "cs.LG"],
           "keywords": ["query optimizer", "execution plan", "cardinality estimation", "cost model"],
           "exclude_keywords": []
         }
@@ -43,8 +46,10 @@
       "timezone": "Asia/Shanghai",
       "push_time": "09:00",
       "time_window_hours": 168,
-      "query_strategy": "category_first",
+      "query_strategy": "category_keyword_union",
       "require_primary_category": true,
+      "history_scope": "subscription",
+      "category_expand_mode": "balanced",
       "embedding_filter": {
         "enabled": true,
         "model": "BAAI/bge-m3",
@@ -53,14 +58,15 @@
       },
       "agent_rerank": {
         "enabled": true,
-        "model": "gpt-4.1-mini",
+        "model": "BAAI/bge-reranker-v2-m3",
         "top_k": 40
       },
       "field_settings": [
         {
           "name": "时间序列预测",
           "limit": 10,
-          "categories": ["cs.LG", "stat.ML"],
+          "categories": ["cs.LG", "stat.ML", "stat.AP"],
+          "primary_categories": ["cs.LG", "stat.ML"],
           "keywords": ["time series", "forecasting", "temporal", "probabilistic forecasting"],
           "exclude_keywords": []
         }

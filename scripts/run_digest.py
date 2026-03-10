@@ -17,6 +17,7 @@ Core features:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
@@ -74,6 +75,7 @@ class FieldSetting:
     name: str
     limit: int
     categories: list[str] = field(default_factory=list)
+    primary_categories: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
 
@@ -168,6 +170,41 @@ def expand_keywords_for_query(keywords: list[str]) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def _is_english_term(term: str) -> bool:
+    t = (term or "").strip()
+    if not t:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9\-\s]+", t))
+
+
+def _expand_english_variants(keywords: list[str]) -> list[str]:
+    out: list[str] = []
+    for kw in keywords:
+        k = kw.strip().lower()
+        if not k:
+            continue
+        out.append(k)
+        if "recommendation" in k:
+            out.extend(["recommender", "recommender system", "recommend"])
+        if "recommender" in k:
+            out.extend(["recommendation", "recommend", "recsys"])
+        if "optimizer" in k:
+            out.extend(["optimization", "query optimizer", "cost model", "execution plan"])
+        if "retrieval" in k:
+            out.extend(["rank", "ranking", "information retrieval"])
+    return list(dict.fromkeys(out))
+
+
+def english_query_terms(field_name: str, keywords: list[str], max_terms: int = 8) -> list[str]:
+    seeds = [field_name] + keywords
+    seeds = [s for s in seeds if _is_english_term(s)]
+    expanded = _expand_english_variants(seeds)
+    expanded = expand_keywords_for_query(expanded)
+    # Keep informative terms first (longer phrases first).
+    expanded.sort(key=lambda x: (-len(x), x))
+    return expanded[:max(1, max_terms)]
+
+
 def parse_field_settings(sub: dict[str, Any]) -> list[FieldSetting]:
     if isinstance(sub.get("field_settings"), list) and sub["field_settings"]:
         out: list[FieldSetting] = []
@@ -180,6 +217,7 @@ def parse_field_settings(sub: dict[str, Any]) -> list[FieldSetting]:
                     name=name,
                     limit=clamp_limit(item.get("limit", 10)),
                     categories=[str(x).strip() for x in item.get("categories", []) if str(x).strip()],
+                    primary_categories=[str(x).strip() for x in item.get("primary_categories", []) if str(x).strip()],
                     keywords=[str(x).strip() for x in item.get("keywords", []) if str(x).strip()],
                     exclude_keywords=[str(x).strip() for x in item.get("exclude_keywords", []) if str(x).strip()],
                 )
@@ -283,6 +321,52 @@ def fetch_arxiv_papers(search_query: str, source_field: str, max_results: int) -
         )
 
     return papers
+
+
+def fetch_arxiv_papers_union(
+    categories: list[str],
+    keyword_terms: list[str],
+    source_field: str,
+    max_results: int,
+) -> list[Paper]:
+    # Union recall: run one query per keyword and merge, instead of forcing term intersection.
+    queries: list[str] = []
+    if categories:
+        queries.append(build_search_query(categories, [], strict=False))
+    for kw in keyword_terms:
+        q = build_search_query(categories, [kw], strict=True)
+        queries.append(q)
+    queries = list(dict.fromkeys([q for q in queries if q]))
+    if not queries:
+        return []
+
+    per_query = max(20, int(max_results / max(1, len(queries))))
+    merged: dict[str, Paper] = {}
+    workers_env = os.getenv("ARXIV_UNION_WORKERS", "").strip()
+    try:
+        workers = int(workers_env) if workers_env else 0
+    except Exception:
+        workers = 0
+    if workers <= 0:
+        workers = min(8, len(queries))
+    workers = max(1, workers)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_query = {
+            executor.submit(fetch_arxiv_papers, q, source_field=source_field, max_results=per_query): q
+            for q in queries
+        }
+        for future in as_completed(future_to_query):
+            try:
+                chunk = future.result()
+            except Exception:
+                # Best-effort union recall: skip failed query and keep others.
+                continue
+            for p in chunk:
+                k = f"{p.arxiv_id}:{p.version}"
+                if k not in merged:
+                    merged[k] = p
+    return list(merged.values())
 
 
 def within_hours(paper: Paper, hours: int, now_utc: datetime) -> bool:
@@ -400,6 +484,7 @@ def should_keep_for_specific_field(
 
 
 _EMBED_MODEL_CACHE: dict[str, Any] = {}
+_RERANK_MODEL_CACHE: dict[str, Any] = {}
 
 
 def _dot(a: list[float], b: list[float]) -> float:
@@ -415,6 +500,14 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if na <= 0 or nb <= 0:
         return 0.0
     return _dot(a, b) / (na * nb)
+
+
+def _sigmoid(x: float) -> float:
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
 
 
 def _load_embed_model(model_name: str) -> Any | None:
@@ -483,77 +576,58 @@ def embedding_filter_papers(
     return kept
 
 
-def _openai_rerank(
+def _load_rerank_model(model_name: str) -> Any | None:
+    key = model_name.strip()
+    if not key:
+        return None
+    if key in _RERANK_MODEL_CACHE:
+        return _RERANK_MODEL_CACHE[key]
+    try:
+        from sentence_transformers import CrossEncoder  # type: ignore
+    except Exception:
+        return None
+    try:
+        model = CrossEncoder(key)
+    except Exception:
+        return None
+    _RERANK_MODEL_CACHE[key] = model
+    return model
+
+
+def _local_rerank(
     papers: list[Paper],
     field_name: str,
     canonical_en: str,
     keywords: list[str],
     model_name: str,
 ) -> dict[str, float]:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or not papers:
+    if not papers:
         return {}
 
-    prompt = {
-        "field_name": field_name,
-        "canonical_en": canonical_en,
-        "keywords": keywords[:20],
-        "papers": [
-            {
-                "arxiv_id": p.arxiv_id,
-                "title": p.title_en,
-                "abstract": p.abstract_en[:1500],
-            }
-            for p in papers
-        ],
-        "instruction": (
-            "Score relevance for this field from 0 to 1. "
-            "Return strict JSON: {\"scores\":[{\"arxiv_id\":\"...\",\"score\":0.0}]}"
-        ),
-    }
-    body = {
-        "model": model_name,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": "You are a strict research relevance ranker."}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}],
-            },
-        ],
-    }
-    req = Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
+    model = _load_rerank_model(model_name)
+    if model is None:
+        return {}
+
+    query = " | ".join(
+        [
+            f"field: {field_name}",
+            f"canonical: {canonical_en}",
+            f"keywords: {', '.join(keywords[:20])}",
+        ]
     )
+    pairs = [(query, f"{p.title_en}\n\n{p.abstract_en[:2000]}") for p in papers]
     try:
-        with urlopen(req, timeout=60) as resp:
-            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        raw_scores = model.predict(pairs)
     except Exception:
         return {}
 
-    chunks: list[str] = []
-    for item in payload.get("output", []):
-        for content in item.get("content", []):
-            if content.get("type") == "output_text":
-                chunks.append(content.get("text", ""))
-    obj = _extract_json_from_text("\n".join(chunks).strip())
-    if not obj:
-        return {}
     out: dict[str, float] = {}
-    for row in obj.get("scores", []):
+    for p, s in zip(papers, raw_scores):
         try:
-            pid = str(row.get("arxiv_id", "")).strip()
-            score = float(row.get("score", 0.0))
+            score = float(s)
         except Exception:
-            continue
-        if not pid:
-            continue
-        out[pid] = max(0.0, min(1.0, score))
+            score = 0.0
+        out[p.arxiv_id] = _sigmoid(score)
     return out
 
 def _extract_json_from_text(text: str) -> dict[str, Any] | None:
@@ -732,10 +806,16 @@ def render_markdown(
             canonical_en = str(item.get("canonical_en", "")).strip() or field_cn
             keywords = [str(x).strip() for x in item.get("keywords", []) if str(x).strip()]
             venues = [str(x).strip() for x in item.get("venues", []) if str(x).strip()]
+            categories = [str(x).strip() for x in item.get("categories", []) if str(x).strip()]
+            primary_categories = [str(x).strip() for x in item.get("primary_categories", []) if str(x).strip()]
             if not field_cn and not canonical_en:
                 continue
             profile_rows.append(f"- Field Profile: {field_cn or canonical_en}")
             profile_rows.append(f"  - Canonical EN: {canonical_en}")
+            profile_rows.append(f"  - Categories: {', '.join(categories[:12]) if categories else '(none)'}")
+            profile_rows.append(
+                f"  - Primary Categories: {', '.join(primary_categories[:12]) if primary_categories else '(none)'}"
+            )
             profile_rows.append(f"  - Keywords: {', '.join(keywords[:16]) if keywords else '(none)'}")
             profile_rows.append(f"  - Venues/Journals: {', '.join(venues[:12]) if venues else '(none)'}")
     else:
@@ -750,9 +830,15 @@ def render_markdown(
         for f in field_names:
             fs = fs_map.get(f, {})
             keywords = [str(x).strip() for x in fs.get("keywords", []) if str(x).strip()]
+            categories = [str(x).strip() for x in fs.get("categories", []) if str(x).strip()]
+            primary_categories = [str(x).strip() for x in fs.get("primary_categories", []) if str(x).strip()]
             canonical_en = f
             profile_rows.append(f"- Field Profile: {f}")
             profile_rows.append(f"  - Canonical EN: {canonical_en}")
+            profile_rows.append(f"  - Categories: {', '.join(categories[:12]) if categories else '(none)'}")
+            profile_rows.append(
+                f"  - Primary Categories: {', '.join(primary_categories[:12]) if primary_categories else '(none)'}"
+            )
             profile_rows.append(f"  - Keywords: {', '.join(keywords[:16]) if keywords else '(none)'}")
             profile_rows.append(f"  - Venues/Journals: {', '.join(venues[:12]) if venues else '(none)'}")
 
@@ -853,6 +939,7 @@ def run_subscription(
     state: dict[str, Any],
     output_dir: Path,
     dry_run: bool = False,
+    ignore_history: bool = False,
 ) -> dict[str, Any]:
     now_utc = datetime.now(timezone.utc)
     time_window_hours = int(sub.get("time_window_hours", 24))
@@ -880,21 +967,42 @@ def run_subscription(
             if field_cn:
                 field_profile_map.setdefault(field_cn, item)
 
-    sent_versions = state.get("sent_versions", {})
-    if not isinstance(sent_versions, dict):
-        sent_versions = {}
-    legacy_sent_ids = set(state.get("sent_ids", []))
+    sub_key = subscription_key(sub)
+    history_scope = str(sub.get("history_scope", "subscription")).strip().lower()
+
+    sent_versions_global = state.get("sent_versions", {})
+    if not isinstance(sent_versions_global, dict):
+        sent_versions_global = {}
+    sent_versions_by_sub = state.get("sent_versions_by_sub", {})
+    if not isinstance(sent_versions_by_sub, dict):
+        sent_versions_by_sub = {}
+    sent_ids_by_sub = state.get("sent_ids_by_sub", {})
+    if not isinstance(sent_ids_by_sub, dict):
+        sent_ids_by_sub = {}
+
+    if history_scope == "global":
+        sent_versions_active = sent_versions_global
+        legacy_sent_ids = set(state.get("sent_ids", []))
+    else:
+        active = sent_versions_by_sub.get(sub_key, {})
+        if not isinstance(active, dict):
+            active = {}
+        sent_versions_active = active
+        legacy_sent_ids = set(sent_ids_by_sub.get(sub_key, []))
 
     def collect(window_hours: int, relax_keywords: bool) -> tuple[list[Paper], dict[str, list[Paper]], int]:
         all_selected: list[Paper] = []
         by_field: dict[str, list[Paper]] = {f.name: [] for f in field_settings}
         total_candidates = 0
 
-        query_strategy = str(sub.get("query_strategy", "category_first")).strip().lower()
+        query_strategy = str(sub.get("query_strategy", "category_keyword_union")).strip().lower()
         require_primary_category = bool(sub.get("require_primary_category", True))
 
         for fs in field_settings:
-            cats = fs.categories or normalize_field_to_categories(fs.name)
+            cats_all = fs.categories or normalize_field_to_categories(fs.name)
+            primary_cats = fs.primary_categories or cats_all
+            # Use primary categories as the only retrieval/constraint categories.
+            cats = list(primary_cats) if primary_cats else list(cats_all)
             lowered_name = fs.name.strip().lower()
             has_exact_mapping = lowered_name in FIELD_TO_CATEGORIES
             inferred_terms = infer_terms_from_field(fs.name)
@@ -911,14 +1019,23 @@ def run_subscription(
             excludes = list(dict.fromkeys(global_excludes + fs.exclude_keywords))
 
             strict_query = bool(sub.get("strict_query", False))
-            query_keywords = [] if query_strategy == "category_first" else expand_keywords_for_query(keywords)
-            query = build_search_query(cats, query_keywords, strict=strict_query)
             fetch_size = max(50, fs.limit * 8)
-            papers = fetch_arxiv_papers(query, source_field=fs.name, max_results=fetch_size)
+            query_terms_en = english_query_terms(canonical_en, keywords, max_terms=8)
+            if query_strategy in {"keyword_union", "category_keyword_union"}:
+                papers = fetch_arxiv_papers_union(
+                    categories=cats,
+                    keyword_terms=query_terms_en,
+                    source_field=fs.name,
+                    max_results=fetch_size,
+                )
+            else:
+                query_keywords = [] if query_strategy == "category_first" else query_terms_en
+                query = build_search_query(cats, query_keywords, strict=strict_query)
+                papers = fetch_arxiv_papers(query, source_field=fs.name, max_results=fetch_size)
             candidates = [p for p in papers if within_hours(p, window_hours, now_utc)]
 
             if require_primary_category:
-                candidates = [p for p in candidates if p.primary_category in cats]
+                candidates = [p for p in candidates if p.primary_category in primary_cats]
 
             if excludes:
                 candidates = [p for p in candidates if not contains_any(f"{p.title_en} {p.abstract_en}", excludes)]
@@ -937,8 +1054,8 @@ def run_subscription(
                     p, fs.name, keywords, cats, has_exact_mapping=has_exact_mapping
                 ):
                     continue
-                prev_v = sent_versions.get(p.arxiv_id)
-                if prev_v is None and p.arxiv_id in legacy_sent_ids:
+                prev_v = None if ignore_history else sent_versions_active.get(p.arxiv_id)
+                if (not ignore_history) and prev_v is None and p.arxiv_id in legacy_sent_ids:
                     prev_v = "v1"
 
                 if prev_v is None:
@@ -955,10 +1072,10 @@ def run_subscription(
             rerank_cfg = sub.get("agent_rerank", {}) if isinstance(sub.get("agent_rerank"), dict) else {}
             if bool(rerank_cfg.get("enabled", False)) and scored:
                 rerank_top_k = int(rerank_cfg.get("top_k", 40))
-                rerank_model = str(rerank_cfg.get("model", "gpt-4.1-mini"))
+                rerank_model = str(rerank_cfg.get("model", "BAAI/bge-reranker-v2-m3"))
                 scored.sort(key=lambda x: x.score, reverse=True)
                 rerank_input = scored[: max(1, rerank_top_k)]
-                rerank_map = _openai_rerank(
+                rerank_map = _local_rerank(
                     rerank_input,
                     field_name=fs.name,
                     canonical_en=canonical_en,
@@ -1026,10 +1143,17 @@ def run_subscription(
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(markdown, encoding="utf-8")
 
-        for p in deduped:
-            sent_versions[p.arxiv_id] = p.version
-        state["sent_versions"] = sent_versions
-        state["sent_ids"] = sorted(sent_versions.keys())[-5000:]
+        if not ignore_history:
+            for p in deduped:
+                sent_versions_active[p.arxiv_id] = p.version
+            if history_scope == "global":
+                state["sent_versions"] = sent_versions_active
+                state["sent_ids"] = sorted(sent_versions_active.keys())[-5000:]
+            else:
+                sent_versions_by_sub[sub_key] = sent_versions_active
+                state["sent_versions_by_sub"] = sent_versions_by_sub
+                sent_ids_by_sub[sub_key] = sorted(sent_versions_active.keys())[-5000:]
+                state["sent_ids_by_sub"] = sent_ids_by_sub
         state["last_run_at"] = now_utc.isoformat()
 
     return {
@@ -1059,6 +1183,7 @@ def main() -> int:
     parser.add_argument("--state", default="data/state.json")
     parser.add_argument("--output-dir", default="output/daily")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ignore-history", action="store_true", help="Ignore sent history for this run")
     parser.add_argument("--emit-markdown", action="store_true", help="Include full markdown in stdout JSON")
     parser.add_argument(
         "--only-due-now",
@@ -1123,7 +1248,13 @@ def main() -> int:
                 )
                 continue
         try:
-            res = run_subscription(sub, state, Path(args.output_dir), dry_run=args.dry_run)
+            res = run_subscription(
+                sub,
+                state,
+                Path(args.output_dir),
+                dry_run=args.dry_run,
+                ignore_history=args.ignore_history,
+            )
             results.append(res)
             has_real_run = True
             if not args.dry_run:

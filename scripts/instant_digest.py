@@ -28,8 +28,20 @@ def main() -> int:
     parser.add_argument("--time-window-hours", type=int, default=24)
     parser.add_argument("--config-out", default="config/subscriptions.instant.json")
     parser.add_argument("--profiles-json", default="config/agent_field_profiles.json", help="Agent profile json path")
+    parser.add_argument("--taxonomy-json", default="data/arxiv_taxonomy.json", help="Local taxonomy json path")
+    parser.add_argument(
+        "--category-expand-mode",
+        default="balanced",
+        choices=["off", "conservative", "balanced", "broad"],
+    )
+    parser.add_argument("--agent-categories-only", action="store_true")
     parser.add_argument("--no-openai", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--respect-history",
+        action="store_true",
+        help="Respect sent history (default is ignore history for instant run)",
+    )
     parser.add_argument(
         "--with-json-summary",
         action="store_true",
@@ -62,12 +74,19 @@ def main() -> int:
     ]
     if args.no_openai:
         prep.append("--no-openai")
+    prep.extend(["--category-expand-mode", args.category_expand_mode])
+    if args.agent_categories_only:
+        prep.append("--agent-categories-only")
     if args.profiles_json:
         prep.extend(["--profiles-json", args.profiles_json])
+    if args.taxonomy_json:
+        prep.extend(["--taxonomy-json", args.taxonomy_json])
 
     run_cmd(prep, root)
 
     run = [py, "scripts/run_digest.py", "--config", args.config_out, "--emit-markdown"]
+    if not args.respect_history:
+        run.append("--ignore-history")
     if args.dry_run:
         run.append("--dry-run")
     out = run_cmd(run, root)

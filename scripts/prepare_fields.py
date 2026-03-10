@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -30,6 +31,155 @@ CATEGORY_VENUES = {
     "cs.CL": ["ACL", "EMNLP", "NAACL", "COLING"],
     "cs.LG": ["ICML", "NeurIPS", "ICLR", "AAAI"],
 }
+
+
+def _canonicalize_category(code: str) -> str:
+    raw = str(code or "").strip()
+    if not raw:
+        return raw
+    if "." not in raw:
+        return raw.lower()
+    prefix, suffix = raw.split(".", 1)
+    prefix = prefix.lower()
+    if re.fullmatch(r"[A-Za-z]{2}", suffix):
+        suffix = suffix.upper()
+    else:
+        suffix = suffix.lower()
+    return f"{prefix}.{suffix}"
+
+
+def _load_taxonomy(path: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    p = Path(path)
+    if not p.exists():
+        return {}, set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}, set()
+    rows = data.get("entries", []) if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        return {}, set()
+    by_code: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = _canonicalize_category(str(row.get("code", "")))
+        if not code:
+            continue
+        by_code[code] = row
+    return by_code, set(by_code.keys())
+
+
+def _validate_categories(categories: list[str], known_codes: set[str]) -> list[str]:
+    normalized = [_canonicalize_category(c) for c in categories if str(c).strip()]
+    deduped = list(dict.fromkeys(normalized))
+    if not known_codes:
+        return deduped
+    return [c for c in deduped if c in known_codes]
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _is_english_term(term: str) -> bool:
+    t = str(term or "").strip()
+    return bool(t and re.fullmatch(r"[A-Za-z0-9\-\s]+", t))
+
+
+def _taxonomy_suggest_categories(
+    field_name: str,
+    canonical_en: str,
+    keywords: list[str],
+    taxonomy_rows: dict[str, dict[str, Any]],
+    preferred_groups: list[str] | None = None,
+    top_n: int = 12,
+) -> list[str]:
+    if not taxonomy_rows:
+        return []
+    query_text = " ".join([field_name, canonical_en] + keywords)
+    q_tokens = _tokenize(query_text)
+    generic = {"system", "systems", "learning", "model", "models", "method", "methods", "paper", "papers"}
+    q_tokens = {t for t in q_tokens if t not in generic and len(t) >= 2}
+    if not q_tokens:
+        return []
+    preferred = set([g.strip().lower() for g in (preferred_groups or []) if g.strip()])
+
+    ranked: list[tuple[float, str]] = []
+    for code, row in taxonomy_rows.items():
+        name = str(row.get("name", ""))
+        group = str(row.get("group", ""))
+        if preferred and group.lower() not in preferred:
+            continue
+        desc = str(row.get("description", ""))
+        doc = f"{code} {name} {group} {desc}".lower()
+        d_tokens = _tokenize(doc)
+        if not d_tokens:
+            continue
+
+        overlap = len(q_tokens.intersection(d_tokens)) / max(1, len(q_tokens))
+        score = overlap
+        if code.lower() in query_text.lower():
+            score += 1.0
+        if name.lower() and name.lower() in query_text.lower():
+            score += 0.8
+        if score > 0.12:
+            ranked.append((score, code))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    out = [c for _, c in ranked[: max(1, top_n)]]
+    return list(dict.fromkeys(out))
+
+
+def _expand_categories(
+    field_name: str,
+    categories: list[str],
+    mode: str = "balanced",
+) -> tuple[list[str], list[str]]:
+    lowered = field_name.lower()
+    cats = list(dict.fromkeys([c for c in categories if c]))
+    primary = list(cats)
+
+    mode = (mode or "balanced").strip().lower()
+    if mode == "off":
+        if not cats:
+            cats = ["cs.AI"]
+        if not primary:
+            primary = list(cats)
+        return cats, primary
+
+    if ("推荐" in field_name or "recsys" in lowered or "recommend" in lowered):
+        if mode == "conservative":
+            cats = list(dict.fromkeys(cats + ["cs.IR", "cs.LG", "cs.SI"]))
+            primary = list(dict.fromkeys(["cs.IR", "cs.LG", "cs.SI"]))
+        elif mode == "broad":
+            cats = list(dict.fromkeys(cats + ["cs.IR", "cs.LG", "cs.AI", "cs.CL", "cs.SI", "stat.ML"]))
+            primary = list(dict.fromkeys(["cs.IR", "cs.LG", "cs.AI"]))
+        else:
+            cats = list(dict.fromkeys(cats + ["cs.IR", "cs.LG", "cs.SI", "cs.CL"]))
+            primary = list(dict.fromkeys(["cs.IR", "cs.LG", "cs.SI"]))
+    elif ("数据库" in field_name or "database" in lowered or "db" in lowered) and (
+        "优化器" in field_name or "optimizer" in lowered
+    ):
+        if mode == "conservative":
+            cats = list(dict.fromkeys(cats + ["cs.DB"]))
+            primary = list(dict.fromkeys(["cs.DB"]))
+        elif mode == "broad":
+            cats = list(dict.fromkeys(cats + ["cs.DB", "cs.LG", "cs.AI", "cs.IR"]))
+            primary = list(dict.fromkeys(["cs.DB", "cs.LG"]))
+        else:
+            cats = list(dict.fromkeys(cats + ["cs.DB", "cs.LG", "cs.AI"]))
+            primary = list(dict.fromkeys(["cs.DB", "cs.LG"]))
+    elif "时间序列" in field_name or "time series" in lowered:
+        cats = list(dict.fromkeys(cats + ["cs.LG", "stat.ML", "stat.AP"]))
+        primary = list(dict.fromkeys(["cs.LG", "stat.ML"]))
+
+    if not cats:
+        cats = ["cs.AI"]
+        primary = ["cs.AI"]
+    if not primary:
+        primary = list(cats)
+    return cats, primary
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -95,7 +245,7 @@ def _openai_profile(field_name: str) -> dict[str, Any] | None:
 def _heuristic_profile(field_name: str) -> dict[str, Any]:
     lowered = field_name.lower()
     categories: list[str] = []
-    keywords: list[str] = [field_name]
+    keywords: list[str] = []
 
     if "数据库" in field_name or "database" in lowered or "db" in lowered:
         categories.append("cs.DB")
@@ -147,6 +297,10 @@ def build_field_setting(
     limit: int,
     use_openai: bool,
     agent_profile: dict[str, Any] | None = None,
+    category_expand_mode: str = "balanced",
+    require_agent_categories: bool = False,
+    taxonomy_rows: dict[str, dict[str, Any]] | None = None,
+    known_codes: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     profile = agent_profile
     source = "agent" if profile else "heuristic"
@@ -156,18 +310,52 @@ def build_field_setting(
     if not profile:
         profile = _heuristic_profile(field_name)
 
-    keywords = [str(x).strip() for x in profile.get("keywords", []) if str(x).strip()]
-    categories = [str(x).strip() for x in profile.get("categories", []) if str(x).strip()]
-    title_keywords = [str(x).strip() for x in profile.get("title_keywords", []) if str(x).strip()]
-    venues = [str(x).strip() for x in profile.get("venues", []) if str(x).strip()]
+    keywords = [str(x).strip() for x in profile.get("keywords", []) if _is_english_term(str(x).strip())]
+    valid_codes = known_codes or set()
+    categories_raw = [str(x).strip() for x in profile.get("categories", []) if str(x).strip()]
+    categories = _validate_categories(categories_raw, valid_codes)
+    agent_categories = list(categories)
     canonical_en = str(profile.get("canonical_en", field_name)).strip() or field_name
+
+    if require_agent_categories and not categories:
+        raise ValueError(
+            f"Field '{field_name}' missing agent-provided categories. "
+            "Please add categories in config/agent_field_profiles.json."
+        )
+
+    taxonomy_suggested = _taxonomy_suggest_categories(
+        field_name=field_name,
+        canonical_en=canonical_en,
+        keywords=keywords,
+        taxonomy_rows=taxonomy_rows or {},
+        preferred_groups=[c.split(".", 1)[0] for c in agent_categories if "." in c],
+        top_n=12,
+    )
+    taxonomy_suggested = _validate_categories(taxonomy_suggested, valid_codes)
+
+    if not categories:
+        categories = list(taxonomy_suggested)
+
+    primary_categories = [str(x).strip() for x in profile.get("primary_categories", []) if str(x).strip()]
+    primary_categories = _validate_categories(primary_categories, valid_codes)
+    categories, auto_primary = _expand_categories(field_name, categories, mode=category_expand_mode)
+    if not primary_categories:
+        primary_categories = list(dict.fromkeys(taxonomy_suggested + agent_categories + auto_primary))
+    primary_categories = _validate_categories(primary_categories, valid_codes)
+    if not primary_categories:
+        primary_categories = list(categories)
+    # Keep primary categories as a subset of categories.
+    categories = list(dict.fromkeys(categories + primary_categories))
+    title_keywords = [str(x).strip() for x in profile.get("title_keywords", []) if _is_english_term(str(x).strip())]
+    venues = [str(x).strip() for x in profile.get("venues", []) if str(x).strip()]
 
     # Run digest uses field name + keywords for fuzzy retrieval.
     setting = {
         "name": canonical_en,
         "limit": limit,
         "categories": categories,
-        "keywords": list(dict.fromkeys(keywords + [field_name]))[:16],
+        "primary_categories": primary_categories,
+        "keywords": list(dict.fromkeys(keywords))[:16],
         "exclude_keywords": [],
     }
     highlight = {
@@ -180,7 +368,9 @@ def build_field_setting(
         "field": field_name,
         "canonical_en": canonical_en,
         "source": source,
-        "keywords": list(dict.fromkeys(keywords + [field_name]))[:16],
+        "categories": categories,
+        "primary_categories": primary_categories,
+        "keywords": list(dict.fromkeys(keywords))[:16],
         "venues": venues[:8],
     }
 
@@ -197,13 +387,29 @@ def main() -> int:
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-threshold", type=float, default=0.58)
     parser.add_argument("--embedding-top-k", type=int, default=120)
-    parser.add_argument("--rerank-model", default="gpt-4.1-mini")
+    parser.add_argument("--rerank-model", default="BAAI/bge-reranker-v2-m3")
     parser.add_argument("--rerank-top-k", type=int, default=40)
+    parser.add_argument(
+        "--category-expand-mode",
+        default="balanced",
+        choices=["off", "conservative", "balanced", "broad"],
+        help="How to expand categories beyond provided profile categories",
+    )
+    parser.add_argument(
+        "--agent-categories-only",
+        action="store_true",
+        help="Require agent profile to provide categories; do not fallback to heuristic categories",
+    )
     parser.add_argument("--output", default="", help="Optional output path for subscriptions json")
     parser.add_argument(
         "--profiles-json",
         default="config/agent_field_profiles.json",
         help="Agent profile JSON path. Default: config/agent_field_profiles.json",
+    )
+    parser.add_argument(
+        "--taxonomy-json",
+        default="data/arxiv_taxonomy.json",
+        help="Local arXiv taxonomy JSON path. Default: data/arxiv_taxonomy.json",
     )
     parser.add_argument("--no-openai", action="store_true", help="Disable OpenAI generation")
     args = parser.parse_args()
@@ -218,6 +424,7 @@ def main() -> int:
             agent_profiles = loaded
             # When agent profiles are available, they are used as primary source.
             use_openai = False
+    taxonomy_rows, known_codes = _load_taxonomy(args.taxonomy_json)
 
     field_settings = []
     merged_title_keywords: list[str] = []
@@ -231,6 +438,10 @@ def main() -> int:
             args.limit,
             use_openai=use_openai,
             agent_profile=agent_profiles.get(f),
+            category_expand_mode=args.category_expand_mode,
+            require_agent_categories=args.agent_categories_only,
+            taxonomy_rows=taxonomy_rows,
+            known_codes=known_codes,
         )
         field_settings.append(setting)
         traces.append(trace)
@@ -240,6 +451,8 @@ def main() -> int:
                 "canonical_en": trace.get("canonical_en", setting.get("name", f)),
                 "keywords": trace.get("keywords", setting.get("keywords", [])),
                 "venues": trace.get("venues", highlight.get("venues", [])),
+                "categories": trace.get("categories", setting.get("categories", [])),
+                "primary_categories": trace.get("primary_categories", setting.get("primary_categories", [])),
                 "source": trace.get("source", "heuristic"),
             }
         )
@@ -256,8 +469,10 @@ def main() -> int:
                 "time_window_hours": args.time_window_hours,
                 "field_settings": field_settings,
                 "field_profiles": field_profiles,
-                "query_strategy": "category_first",
+                "query_strategy": "category_keyword_union",
                 "require_primary_category": True,
+                "history_scope": "subscription",
+                "category_expand_mode": args.category_expand_mode,
                 "embedding_filter": {
                     "enabled": True,
                     "model": args.embedding_model,
@@ -279,6 +494,8 @@ def main() -> int:
         "meta": {
             "openai_enabled": use_openai,
             "agent_profiles_enabled": bool(agent_profiles),
+            "taxonomy_loaded": bool(taxonomy_rows),
+            "taxonomy_entry_count": len(taxonomy_rows),
             "fields": traces,
         },
     }
