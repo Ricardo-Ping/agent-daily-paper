@@ -87,6 +87,20 @@ def ensure_state_file(state_path: Path) -> None:
     print(f"[BOOTSTRAP] Initialized: {state_path}")
 
 
+def ensure_subscriptions_placeholder(path: Path) -> None:
+    if path.exists():
+        print(f"[BOOTSTRAP] Keep existing file: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    placeholder = {
+        "setup_required": True,
+        "setup_message": "首次使用请先配置：研究领域（可多项）、每领域数量(5-20)、每日推送时间(HH:MM)、时区。",
+        "subscriptions": [],
+    }
+    path.write_text(json.dumps(placeholder, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[BOOTSTRAP] Initialized placeholder config: {path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bootstrap conda env and first-run config")
     parser.add_argument("--env-name", default="arxiv-digest-lab")
@@ -109,10 +123,7 @@ def main() -> int:
         root / "config/agent_field_profiles.json",
         root / "config/agent_field_profiles.example.json",
     )
-    ensure_file_from_template(
-        root / "config/subscriptions.json",
-        root / "config/subscriptions.examples.json",
-    )
+    ensure_subscriptions_placeholder(root / "config/subscriptions.json")
     ensure_state_file(root / "data/state.json")
 
     if args.run_doctor:
@@ -133,4 +144,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

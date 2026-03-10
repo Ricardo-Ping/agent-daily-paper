@@ -819,6 +819,14 @@ def main() -> int:
     config = load_json(Path(args.config), default={"subscriptions": []})
     state = load_json(Path(args.state), default={"sent_ids": [], "sent_versions": {}, "last_run_at": None})
 
+    if bool(config.get("setup_required", False)):
+        msg = config.get("setup_message") or (
+            "Configuration is not initialized. "
+            "Please collect user settings (fields, per-field limit, push_time, timezone) first."
+        )
+        print(msg)
+        return 1
+
     subs = config.get("subscriptions", [])
     if not subs:
         print("No subscriptions found. Please edit config/subscriptions.json.")

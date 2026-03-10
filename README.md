@@ -46,6 +46,9 @@ flowchart TB
 
 ## 首次配置
 
+默认 `config/subscriptions.json` 为“未初始化锁定态”（`setup_required=true`），不会直接推送。
+必须先收集用户配置并写入真实订阅，再运行。
+
 订阅配置至少包含：
 - `field_settings[].name`
 - `field_settings[].limit`（5-20）

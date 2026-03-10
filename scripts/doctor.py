@@ -49,6 +49,15 @@ def check_subscriptions(config_path: Path) -> list[CheckResult]:
     except Exception as exc:
         return [CheckResult("ERROR", "subscriptions.json", f"invalid JSON: {exc}")]
 
+    if isinstance(cfg, dict) and bool(cfg.get("setup_required", False)):
+        return [
+            CheckResult(
+                "ERROR",
+                "subscriptions.json",
+                "setup_required=true: 请先完成初始配置（领域、数量、推送时间、时区）再运行。",
+            )
+        ]
+
     subs = cfg.get("subscriptions", []) if isinstance(cfg, dict) else []
     if not isinstance(subs, list) or not subs:
         out.append(CheckResult("ERROR", "subscriptions.json", "subscriptions is empty or invalid"))
