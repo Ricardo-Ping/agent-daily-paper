@@ -68,8 +68,9 @@ python scripts/bootstrap_env.py --run-doctor
 ```bash
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
-pip install argostranslate
+pip install argostranslate sentence-transformers
 python scripts/install_argos_model.py
+python scripts/install_embedding_model.py --model BAAI/bge-m3
 ```
 
 翻译提供方：
@@ -141,6 +142,34 @@ cp config/agent_field_profiles.example.json config/agent_field_profiles.json
 
 ```powershell
 Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.json
+```
+
+## 相关性漏斗（推荐）
+
+推荐启用四层过滤：
+1. `query_strategy=category_first`（先按 arXiv 分类召回）
+2. `require_primary_category=true`（仅保留主分类命中）
+3. `embedding_filter`（本地向量相似度过滤）
+4. `agent_rerank`（Agent/LLM 语义重排）
+
+`subscriptions.json` 示例：
+
+```json
+{
+  "query_strategy": "category_first",
+  "require_primary_category": true,
+  "embedding_filter": {
+    "enabled": true,
+    "model": "BAAI/bge-m3",
+    "threshold": 0.58,
+    "top_k": 120
+  },
+  "agent_rerank": {
+    "enabled": true,
+    "model": "gpt-4.1-mini",
+    "top_k": 40
+  }
+}
 ```
 
 ## 定时推送（GitHub Actions）

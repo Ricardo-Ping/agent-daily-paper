@@ -26,6 +26,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 - `keywords` / `exclude_keywords`
 - `time_window_hours`
+- `query_strategy`（推荐 `category_first`）
+- `require_primary_category`（推荐 `true`）
+- `embedding_filter.model` / `embedding_filter.threshold` / `embedding_filter.top_k`
+- `agent_rerank.model` / `agent_rerank.top_k`
 - `highlight.title_keywords` / `highlight.authors` / `highlight.venues`
 - 翻译提供方 `TRANSLATE_PROVIDER`：`openai` / `argos` / `auto` / `none`
 
@@ -45,7 +49,11 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 ## 检索与排序
 
-- 检索采用“类别 + 标题/摘要关键词”召回，不依赖单一大类。
+- 检索采用分层漏斗：
+  - 类别召回（`query_strategy=category_first`）
+  - 主分类过滤（`require_primary_category=true`）
+  - embedding 相似度过滤（`embedding_filter`）
+  - Agent/LLM 重排（`agent_rerank`）
 - 细分方向支持模糊匹配评分（如“数据库优化器”）。
 - 重要性分数综合：类别命中 + 关键词命中 + 模糊命中 + 新鲜度。
 - 命中不足时可自动扩大时间窗口并放宽关键词。
@@ -90,6 +98,8 @@ conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
 pip install argostranslate
 python scripts/install_argos_model.py
+pip install sentence-transformers
+python scripts/install_embedding_model.py --model BAAI/bge-m3
 ```
 
 ## 失败兜底

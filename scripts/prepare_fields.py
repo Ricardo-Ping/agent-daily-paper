@@ -120,8 +120,21 @@ def _heuristic_profile(field_name: str) -> dict[str, Any]:
     for c in categories:
         venues += CATEGORY_VENUES.get(c, [])
 
+    if ("数据库" in field_name or "database" in lowered or "db" in lowered) and (
+        "优化器" in field_name or "optimizer" in lowered
+    ):
+        canonical_en = "database query optimizer"
+    elif "推荐" in field_name or "recsys" in lowered or "recommend" in lowered:
+        canonical_en = "recommender systems"
+    elif "视觉" in field_name or "vision" in lowered or lowered == "cv":
+        canonical_en = "computer vision"
+    elif "语言" in field_name or "nlp" in lowered or "llm" in lowered:
+        canonical_en = "natural language processing"
+    else:
+        canonical_en = " ".join([k for k in keywords if k.isascii()][:3]) or field_name
+
     return {
-        "canonical_en": " ".join([k for k in keywords if k.isascii()][:3]) or field_name,
+        "canonical_en": canonical_en,
         "categories": sorted(set(categories)),
         "keywords": list(dict.fromkeys(keywords))[:12],
         "title_keywords": list(dict.fromkeys(keywords))[:8],
@@ -144,6 +157,7 @@ def build_field_setting(
         profile = _heuristic_profile(field_name)
 
     keywords = [str(x).strip() for x in profile.get("keywords", []) if str(x).strip()]
+    categories = [str(x).strip() for x in profile.get("categories", []) if str(x).strip()]
     title_keywords = [str(x).strip() for x in profile.get("title_keywords", []) if str(x).strip()]
     venues = [str(x).strip() for x in profile.get("venues", []) if str(x).strip()]
     canonical_en = str(profile.get("canonical_en", field_name)).strip() or field_name
@@ -152,6 +166,7 @@ def build_field_setting(
     setting = {
         "name": canonical_en,
         "limit": limit,
+        "categories": categories,
         "keywords": list(dict.fromkeys(keywords + [field_name]))[:16],
         "exclude_keywords": [],
     }
@@ -179,6 +194,11 @@ def main() -> int:
     parser.add_argument("--push-time", default="09:00", help="Push time HH:MM")
     parser.add_argument("--timezone", default="Asia/Shanghai", help="Timezone")
     parser.add_argument("--time-window-hours", type=int, default=24)
+    parser.add_argument("--embedding-model", default="BAAI/bge-m3")
+    parser.add_argument("--embedding-threshold", type=float, default=0.58)
+    parser.add_argument("--embedding-top-k", type=int, default=120)
+    parser.add_argument("--rerank-model", default="gpt-4.1-mini")
+    parser.add_argument("--rerank-top-k", type=int, default=40)
     parser.add_argument("--output", default="", help="Optional output path for subscriptions json")
     parser.add_argument(
         "--profiles-json",
@@ -236,6 +256,19 @@ def main() -> int:
                 "time_window_hours": args.time_window_hours,
                 "field_settings": field_settings,
                 "field_profiles": field_profiles,
+                "query_strategy": "category_first",
+                "require_primary_category": True,
+                "embedding_filter": {
+                    "enabled": True,
+                    "model": args.embedding_model,
+                    "threshold": args.embedding_threshold,
+                    "top_k": args.embedding_top_k,
+                },
+                "agent_rerank": {
+                    "enabled": True,
+                    "model": args.rerank_model,
+                    "top_k": args.rerank_top_k,
+                },
                 "highlight": {
                     "title_keywords": list(dict.fromkeys(merged_title_keywords))[:20],
                     "authors": [],

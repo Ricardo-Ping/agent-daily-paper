@@ -1,3 +1,3 @@
 ﻿display_name: Agent Daily Paper
 short_description: 多领域 arXiv 每日论文订阅与即时/定时双模式推送
-default_prompt: 首次先执行 python scripts/bootstrap_env.py --run-doctor 完成环境与配置引导。若 config/subscriptions.json 为 setup_required=true，必须先向用户收集并写入订阅配置（领域、每领域数量、推送时间、时区），不得直接按样例配置推送。默认读取 config/agent_field_profiles.json 进行领域解析。支持即时推送（instant_digest）与定时推送（run_digest + only-due-now），并在聊天中返回与 output/daily/*.md 完全一致的完整 Markdown（不得只给标题+链接）且写入 output/daily。
+default_prompt: 首次先执行 python scripts/bootstrap_env.py --run-doctor 完成环境与配置引导。若 config/subscriptions.json 为 setup_required=true，必须先向用户收集并写入订阅配置（领域、每领域数量、推送时间、时区），不得直接按样例配置推送。默认读取 config/agent_field_profiles.json 进行领域解析。默认使用 category-first + primary-category + embedding_filter(BAAI/bge-m3) + agent_rerank 的分层筛选。支持即时推送（instant_digest）与定时推送（run_digest + only-due-now），并在聊天中返回与 output/daily/*.md 完全一致的完整 Markdown（不得只给标题+链接）且写入 output/daily。

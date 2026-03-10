@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """One-command bootstrap for agent-daily-paper.
 
 Creates/updates a conda env, installs dependencies, installs Argos model,
@@ -43,16 +43,35 @@ def ensure_env(conda: str, env_name: str, py_ver: str, root: Path) -> None:
         print(f"[BOOTSTRAP] Conda env already exists: {env_name}")
 
 
-def install_packages(conda: str, env_name: str, root: Path, skip_argos_model: bool) -> None:
+def install_packages(
+    conda: str,
+    env_name: str,
+    root: Path,
+    skip_argos_model: bool,
+    skip_embedding_model: bool,
+) -> None:
     print("[BOOTSTRAP] Installing python packages in env...")
     run([conda, "run", "-n", env_name, "python", "-m", "pip", "install", "--upgrade", "pip"], cwd=root)
     run([conda, "run", "-n", env_name, "python", "-m", "pip", "install", "argostranslate"], cwd=root)
+    run([conda, "run", "-n", env_name, "python", "-m", "pip", "install", "sentence-transformers"], cwd=root)
 
     if not skip_argos_model:
         print("[BOOTSTRAP] Installing Argos en->zh model...")
         run([conda, "run", "-n", env_name, "python", "scripts/install_argos_model.py"], cwd=root)
     else:
         print("[BOOTSTRAP] Skipping Argos model installation by flag.")
+
+    if not skip_embedding_model:
+        print("[BOOTSTRAP] Preloading embedding model (BAAI/bge-m3)...")
+        proc = run(
+            [conda, "run", "-n", env_name, "python", "scripts/install_embedding_model.py", "--model", "BAAI/bge-m3"],
+            cwd=root,
+            check=False,
+        )
+        if proc.returncode != 0:
+            print("[BOOTSTRAP][WARN] Embedding model preload failed, will download on first run.")
+    else:
+        print("[BOOTSTRAP] Skipping embedding model preload by flag.")
 
 
 def ensure_file_from_template(dst: Path, src: Path) -> None:
@@ -106,6 +125,7 @@ def main() -> int:
     parser.add_argument("--env-name", default="arxiv-digest-lab")
     parser.add_argument("--python-version", default="3.10")
     parser.add_argument("--skip-argos-model", action="store_true")
+    parser.add_argument("--skip-embedding-model", action="store_true")
     parser.add_argument("--run-doctor", action="store_true")
     args = parser.parse_args()
 
@@ -114,7 +134,13 @@ def main() -> int:
     try:
         conda = find_conda()
         ensure_env(conda, args.env_name, args.python_version, root)
-        install_packages(conda, args.env_name, root, args.skip_argos_model)
+        install_packages(
+            conda,
+            args.env_name,
+            root,
+            args.skip_argos_model,
+            args.skip_embedding_model,
+        )
     except Exception as exc:
         print(f"[BOOTSTRAP][ERROR] {exc}")
         return 1
@@ -144,3 +170,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

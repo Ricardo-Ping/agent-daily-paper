@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Daily arXiv digest runner.
 
 Core features:
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover
 
 ARXIV_API = "http://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+ARXIV_NS = {"arxiv": "http://arxiv.org/schemas/atom"}
 
 
 FIELD_TO_CATEGORIES = {
@@ -71,6 +73,7 @@ DEFAULT_VENUES = [
 class FieldSetting:
     name: str
     limit: int
+    categories: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
 
@@ -83,11 +86,14 @@ class Paper:
     abstract_en: str
     authors: list[str]
     categories: list[str]
+    primary_category: str
     published: datetime
     updated: datetime
     url: str
     source_field: str
     score: float = 0.0
+    embedding_score: float = 0.0
+    rerank_score: float = 0.0
     title_zh: str = ""
     abstract_zh: str = ""
     status: str = "NEW"
@@ -173,6 +179,7 @@ def parse_field_settings(sub: dict[str, Any]) -> list[FieldSetting]:
                 FieldSetting(
                     name=name,
                     limit=clamp_limit(item.get("limit", 10)),
+                    categories=[str(x).strip() for x in item.get("categories", []) if str(x).strip()],
                     keywords=[str(x).strip() for x in item.get("keywords", []) if str(x).strip()],
                     exclude_keywords=[str(x).strip() for x in item.get("exclude_keywords", []) if str(x).strip()],
                 )
@@ -252,6 +259,8 @@ def fetch_arxiv_papers(search_query: str, source_field: str, max_results: int) -
         published = parse_arxiv_datetime(entry.findtext("atom:published", default="", namespaces=ATOM_NS))
         updated = parse_arxiv_datetime(entry.findtext("atom:updated", default="", namespaces=ATOM_NS))
         categories = [c.attrib.get("term", "") for c in entry.findall("atom:category", ATOM_NS)]
+        primary_node = entry.find("arxiv:primary_category", ARXIV_NS)
+        primary_category = primary_node.attrib.get("term", "") if primary_node is not None else (categories[0] if categories else "")
         authors = [
             (a.findtext("atom:name", default="", namespaces=ATOM_NS) or "").strip()
             for a in entry.findall("atom:author", ATOM_NS)
@@ -265,6 +274,7 @@ def fetch_arxiv_papers(search_query: str, source_field: str, max_results: int) -
                 abstract_en=abstract,
                 authors=[x for x in authors if x],
                 categories=[x for x in categories if x],
+                primary_category=primary_category,
                 published=published,
                 updated=updated,
                 url=f"https://arxiv.org/abs/{arxiv_id}",
@@ -308,6 +318,34 @@ def _fuzzy_term_score(text: str, terms: list[str]) -> float:
     return score
 
 
+GENERIC_TERMS = {
+    "paper", "method", "model", "models", "learning", "system", "systems",
+    "approach", "framework", "analysis", "task", "tasks", "results", "data",
+    "query", "queries",
+}
+
+
+def _keyword_signals(text: str, keywords: list[str]) -> tuple[int, int]:
+    text_l = text.lower()
+    phrase_hits = 0
+    strong_hits = 0
+    seen: set[str] = set()
+    for kw in keywords:
+        k = kw.strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        if k not in text_l:
+            continue
+        if " " in k and len(k) >= 8:
+            phrase_hits += 1
+            strong_hits += 1
+            continue
+        if len(k) >= 6 and k not in GENERIC_TERMS:
+            strong_hits += 1
+    return phrase_hits, strong_hits
+
+
 def score_paper(
     p: Paper,
     categories: list[str],
@@ -323,21 +361,23 @@ def score_paper(
     kw_hits = sum(1 for kw in keywords if kw.lower() in text)
     keyword_score = kw_hits * 12.0
     fuzzy_score = _fuzzy_term_score(text, [field_name] + keywords) * 8.0
-    return recency + field_score + keyword_score + fuzzy_score
+    embedding_bonus = max(0.0, p.embedding_score) * 35.0
+    return recency + field_score + keyword_score + fuzzy_score + embedding_bonus
 
 
 def should_keep_for_specific_field(
     paper: Paper,
     field_name: str,
     keywords: list[str],
+    categories: list[str],
     has_exact_mapping: bool,
 ) -> bool:
-    # For custom fine-grained fields (e.g. "数据库优化器"), require at least
-    # one explicit keyword hit or fuzzy overlap in title/abstract.
-    if has_exact_mapping:
-        return True
     text = f"{paper.title_en} {paper.abstract_en}".lower()
+    cat_hit = bool(set(categories).intersection(set(paper.categories)))
+    phrase_hits, strong_hits = _keyword_signals(text, keywords)
     field_l = field_name.lower()
+
+    # For fine-grained DB optimizer fields, require both DB and optimizer semantics.
     if ("数据库" in field_name or "database" in field_l or "db" in field_l) and (
         "优化器" in field_name or "optimizer" in field_l
     ):
@@ -345,12 +385,176 @@ def should_keep_for_specific_field(
         opt_terms = ["optimizer", "optimization", "cost model", "execution plan", "query plan"]
         has_db = any(t in text for t in db_terms)
         has_opt = any(t in text for t in opt_terms)
-        return has_db and has_opt
+        return has_db and has_opt and (cat_hit or phrase_hits >= 1 or strong_hits >= 2)
 
-    kw_hits = sum(1 for kw in keywords if kw and kw.lower() in text)
+    # Exact mapped broad fields still require basic lexical support.
+    if has_exact_mapping:
+        return cat_hit and (phrase_hits >= 1 or strong_hits >= 1)
+
+    # If category does not match, demand strong textual evidence.
+    if not cat_hit:
+        return phrase_hits >= 2 or strong_hits >= 3
+
     fuzzy_hits = _fuzzy_term_score(text, [field_name] + keywords)
-    return kw_hits > 0 or fuzzy_hits > 0
+    return phrase_hits >= 1 or strong_hits >= 1 or fuzzy_hits >= 1.5
 
+
+_EMBED_MODEL_CACHE: dict[str, Any] = {}
+
+
+def _dot(a: list[float], b: list[float]) -> float:
+    return float(sum(x * y for x, y in zip(a, b)))
+
+
+def _norm(a: list[float]) -> float:
+    return math.sqrt(sum(x * x for x in a))
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    na, nb = _norm(a), _norm(b)
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return _dot(a, b) / (na * nb)
+
+
+def _load_embed_model(model_name: str) -> Any | None:
+    key = model_name.strip()
+    if not key:
+        return None
+    if key in _EMBED_MODEL_CACHE:
+        return _EMBED_MODEL_CACHE[key]
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+    except Exception:
+        return None
+    try:
+        model = SentenceTransformer(key)
+    except Exception:
+        return None
+    _EMBED_MODEL_CACHE[key] = model
+    return model
+
+
+def embedding_filter_papers(
+    papers: list[Paper],
+    canonical_en: str,
+    keywords: list[str],
+    venues: list[str],
+    cfg: dict[str, Any],
+) -> list[Paper]:
+    if not papers:
+        return papers
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return papers
+
+    model_name = str(cfg.get("model", "BAAI/bge-m3")).strip() or "BAAI/bge-m3"
+    threshold = float(cfg.get("threshold", 0.58))
+    top_k = int(cfg.get("top_k", max(80, len(papers))))
+    model = _load_embed_model(model_name)
+    if model is None:
+        return papers
+
+    profile_text = " | ".join(
+        [
+            f"field: {canonical_en}",
+            f"keywords: {', '.join(keywords[:20])}",
+            f"venues: {', '.join(venues[:12])}",
+        ]
+    )
+    paper_texts = [f"{p.title_en}\n\n{p.abstract_en}" for p in papers]
+
+    try:
+        field_emb = model.encode(profile_text, normalize_embeddings=False)
+        paper_embs = model.encode(paper_texts, normalize_embeddings=False)
+    except Exception:
+        return papers
+
+    kept: list[Paper] = []
+    for p, emb in zip(papers, paper_embs):
+        sim = _cosine(list(field_emb), list(emb))
+        p.embedding_score = sim
+        if sim >= threshold:
+            kept.append(p)
+
+    kept.sort(key=lambda x: x.embedding_score, reverse=True)
+    if top_k > 0:
+        kept = kept[:top_k]
+    return kept
+
+
+def _openai_rerank(
+    papers: list[Paper],
+    field_name: str,
+    canonical_en: str,
+    keywords: list[str],
+    model_name: str,
+) -> dict[str, float]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or not papers:
+        return {}
+
+    prompt = {
+        "field_name": field_name,
+        "canonical_en": canonical_en,
+        "keywords": keywords[:20],
+        "papers": [
+            {
+                "arxiv_id": p.arxiv_id,
+                "title": p.title_en,
+                "abstract": p.abstract_en[:1500],
+            }
+            for p in papers
+        ],
+        "instruction": (
+            "Score relevance for this field from 0 to 1. "
+            "Return strict JSON: {\"scores\":[{\"arxiv_id\":\"...\",\"score\":0.0}]}"
+        ),
+    }
+    body = {
+        "model": model_name,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": "You are a strict research relevance ranker."}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}],
+            },
+        ],
+    }
+    req = Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=60) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return {}
+
+    chunks: list[str] = []
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") == "output_text":
+                chunks.append(content.get("text", ""))
+    obj = _extract_json_from_text("\n".join(chunks).strip())
+    if not obj:
+        return {}
+    out: dict[str, float] = {}
+    for row in obj.get("scores", []):
+        try:
+            pid = str(row.get("arxiv_id", "")).strip()
+            score = float(row.get("score", 0.0))
+        except Exception:
+            continue
+        if not pid:
+            continue
+        out[pid] = max(0.0, min(1.0, score))
+    return out
 
 def _extract_json_from_text(text: str) -> dict[str, Any] | None:
     try:
@@ -663,6 +867,18 @@ def run_subscription(
     field_settings = parse_field_settings(sub)
     if not field_settings:
         raise ValueError("No fields configured. Add field_settings or fields.")
+    raw_profiles = sub.get("field_profiles", [])
+    field_profile_map: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_profiles, list):
+        for item in raw_profiles:
+            if not isinstance(item, dict):
+                continue
+            canonical = str(item.get("canonical_en", "")).strip()
+            field_cn = str(item.get("field", "")).strip()
+            if canonical:
+                field_profile_map[canonical] = item
+            if field_cn:
+                field_profile_map.setdefault(field_cn, item)
 
     sent_versions = state.get("sent_versions", {})
     if not isinstance(sent_versions, dict):
@@ -674,29 +890,52 @@ def run_subscription(
         by_field: dict[str, list[Paper]] = {f.name: [] for f in field_settings}
         total_candidates = 0
 
+        query_strategy = str(sub.get("query_strategy", "category_first")).strip().lower()
+        require_primary_category = bool(sub.get("require_primary_category", True))
+
         for fs in field_settings:
-            cats = normalize_field_to_categories(fs.name)
+            cats = fs.categories or normalize_field_to_categories(fs.name)
             lowered_name = fs.name.strip().lower()
             has_exact_mapping = lowered_name in FIELD_TO_CATEGORIES
             inferred_terms = infer_terms_from_field(fs.name)
+            profile = field_profile_map.get(fs.name, {})
+            profile_keywords = [str(x).strip() for x in profile.get("keywords", []) if str(x).strip()]
+            profile_venues = [str(x).strip() for x in profile.get("venues", []) if str(x).strip()]
+            canonical_en = str(profile.get("canonical_en", fs.name)).strip() or fs.name
             if relax_keywords:
-                keywords: list[str] = [fs.name] + inferred_terms
+                keywords: list[str] = [fs.name] + inferred_terms + profile_keywords
             else:
-                keywords = list(dict.fromkeys(global_keywords + fs.keywords + [fs.name] + inferred_terms))
+                keywords = list(
+                    dict.fromkeys(global_keywords + fs.keywords + profile_keywords + [fs.name] + inferred_terms)
+                )
             excludes = list(dict.fromkeys(global_excludes + fs.exclude_keywords))
 
             strict_query = bool(sub.get("strict_query", False))
-            query = build_search_query(cats, expand_keywords_for_query(keywords), strict=strict_query)
+            query_keywords = [] if query_strategy == "category_first" else expand_keywords_for_query(keywords)
+            query = build_search_query(cats, query_keywords, strict=strict_query)
             fetch_size = max(50, fs.limit * 8)
             papers = fetch_arxiv_papers(query, source_field=fs.name, max_results=fetch_size)
             candidates = [p for p in papers if within_hours(p, window_hours, now_utc)]
 
+            if require_primary_category:
+                candidates = [p for p in candidates if p.primary_category in cats]
+
             if excludes:
                 candidates = [p for p in candidates if not contains_any(f"{p.title_en} {p.abstract_en}", excludes)]
 
+            candidates = embedding_filter_papers(
+                candidates,
+                canonical_en=canonical_en,
+                keywords=keywords,
+                venues=profile_venues,
+                cfg=sub.get("embedding_filter", {}),
+            )
+
             scored: list[Paper] = []
             for p in candidates:
-                if not should_keep_for_specific_field(p, fs.name, keywords, has_exact_mapping=has_exact_mapping):
+                if not should_keep_for_specific_field(
+                    p, fs.name, keywords, cats, has_exact_mapping=has_exact_mapping
+                ):
                     continue
                 prev_v = sent_versions.get(p.arxiv_id)
                 if prev_v is None and p.arxiv_id in legacy_sent_ids:
@@ -712,6 +951,24 @@ def run_subscription(
                 p.score = score_paper(p, cats, keywords, fs.name, now_utc)
                 p.highlight_tags = build_highlight_tags(p, highlight)
                 scored.append(p)
+
+            rerank_cfg = sub.get("agent_rerank", {}) if isinstance(sub.get("agent_rerank"), dict) else {}
+            if bool(rerank_cfg.get("enabled", False)) and scored:
+                rerank_top_k = int(rerank_cfg.get("top_k", 40))
+                rerank_model = str(rerank_cfg.get("model", "gpt-4.1-mini"))
+                scored.sort(key=lambda x: x.score, reverse=True)
+                rerank_input = scored[: max(1, rerank_top_k)]
+                rerank_map = _openai_rerank(
+                    rerank_input,
+                    field_name=fs.name,
+                    canonical_en=canonical_en,
+                    keywords=keywords,
+                    model_name=rerank_model,
+                )
+                for p in scored:
+                    rr = rerank_map.get(p.arxiv_id, 0.0)
+                    p.rerank_score = rr
+                    p.score += rr * 45.0
 
             total_candidates += len(scored)
             scored.sort(key=lambda x: x.score, reverse=True)
@@ -825,6 +1082,10 @@ def main() -> int:
             "Please collect user settings (fields, per-field limit, push_time, timezone) first."
         )
         print(msg)
+        # For scheduled checks, treat as "skipped" instead of failure.
+        if args.only_due_now:
+            print(json.dumps({"dry_run": args.dry_run, "results": [], "skipped": "setup_required"}, ensure_ascii=False))
+            return 0
         return 1
 
     subs = config.get("subscriptions", [])
@@ -885,3 +1146,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
