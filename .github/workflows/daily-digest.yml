@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   run-digest:
+    concurrency:
+      group: daily-digest-main
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -39,7 +42,16 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add output/daily data/state.json
             git commit -m "chore: daily arxiv digest $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
+            # Handle race with concurrent pushes to main.
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              if [ "$i" -eq 3 ]; then
+                echo "Push failed after 3 retries."
+                exit 1
+              fi
+              echo "Retrying push ($i/3)..."
+              sleep 3
+            done
           else
             echo "No changes to commit."
           fi

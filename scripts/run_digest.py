@@ -785,6 +785,7 @@ def main() -> int:
         return 1
 
     results = []
+    has_real_run = False
     last_push_date_by_sub = state.get("last_push_date_by_sub", {})
     if not isinstance(last_push_date_by_sub, dict):
         last_push_date_by_sub = {}
@@ -815,13 +816,14 @@ def main() -> int:
         try:
             res = run_subscription(sub, state, Path(args.output_dir), dry_run=args.dry_run)
             results.append(res)
+            has_real_run = True
             if not args.dry_run:
                 _, local_date = is_due_now(sub, now_utc, args.due_window_minutes)
                 last_push_date_by_sub[sub_key] = local_date
         except Exception as exc:
             print(f"[ERROR] Subscription failed ({sub.get('name', 'unknown')}): {exc}")
 
-    if not args.dry_run:
+    if not args.dry_run and has_real_run:
         state["last_push_date_by_sub"] = last_push_date_by_sub
         save_json(Path(args.state), state)
 

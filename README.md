@@ -88,7 +88,7 @@ python scripts/doctor.py
 python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72
 ```
 
-默认会读取 `config/agent_field_profiles.json`（若存在）作为 Agent 字段画像输入。
+默认读取 `config/agent_field_profiles.json` 作为 Agent 字段画像输入（首次安装后应完成该文件配置）。
 
 ### 分步执行
 
@@ -97,9 +97,9 @@ python scripts/prepare_fields.py --fields "数据库优化器" --limit 20 --outp
 python scripts/run_digest.py --config config/subscriptions.instant.json --emit-markdown
 ```
 
-## Agent 字段画像输入（可选）
+## Agent 字段画像输入（默认启用）
 
-支持将 Agent 生成的领域画像 JSON 输入到 `prepare_fields.py`。默认路径为 `config/agent_field_profiles.json`。
+`prepare_fields.py` 默认使用 `config/agent_field_profiles.json`，建议作为标准配置文件长期维护。
 
 ```json
 {
@@ -113,11 +113,21 @@ python scripts/run_digest.py --config config/subscriptions.instant.json --emit-m
 }
 ```
 
-运行命令：
+运行命令（默认路径）：
 
 ```bash
-python scripts/prepare_fields.py --fields "数据库优化器" --profiles-json config/agent_field_profiles.example.json --output config/subscriptions.instant.json
+python scripts/prepare_fields.py --fields "数据库优化器" --profiles-json config/agent_field_profiles.json --output config/subscriptions.instant.json
 python scripts/run_digest.py --config config/subscriptions.instant.json --emit-markdown
+```
+
+首次可通过模板初始化：
+
+```bash
+cp config/agent_field_profiles.example.json config/agent_field_profiles.json
+```
+
+```powershell
+Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.json
 ```
 
 ## 定时推送（GitHub Actions）
