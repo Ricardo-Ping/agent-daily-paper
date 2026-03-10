@@ -121,5 +121,8 @@ python scripts/run_digest.py --config config/subscriptions.instant.json --emit-m
 - `scripts/run_digest.py`：抓取、排序、翻译、归档
 - `scripts/prepare_fields.py`：领域输入转订阅配置
 - `scripts/instant_digest.py`：即时推送入口
-- `config/subscriptions.json`：长期订阅配置
+- `config/subscriptions.json`：长期订阅配置（生产）
+- `config/subscriptions.examples.json`：示例订阅集合（参考模板）
+- `config/agent_field_profiles.json`：Agent 字段画像输入（默认读取，建议按需维护）
+- `config/agent_field_profiles.example.json`：字段画像示例模板
 - `output/daily/`：每日归档目录

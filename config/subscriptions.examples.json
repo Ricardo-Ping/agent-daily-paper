@@ -1,0 +1,47 @@
+﻿{
+  "subscriptions": [
+    {
+      "id": "example-db-optimizer",
+      "name": "Example: Database Optimizer",
+      "timezone": "Asia/Shanghai",
+      "push_time": "09:00",
+      "time_window_hours": 72,
+      "fallback_when_empty": true,
+      "fallback_time_window_hours": 168,
+      "fallback_relax_keywords": true,
+      "field_settings": [
+        {
+          "name": "数据库优化器",
+          "limit": 20,
+          "keywords": ["query optimizer", "execution plan", "cardinality estimation", "cost model"],
+          "exclude_keywords": []
+        }
+      ],
+      "highlight": {
+        "title_keywords": ["optimizer", "query", "cost model", "join"],
+        "authors": [],
+        "venues": ["SIGMOD", "VLDB", "ICDE", "KDD"]
+      }
+    },
+    {
+      "id": "example-time-series",
+      "name": "Example: Time Series Forecasting",
+      "timezone": "Asia/Shanghai",
+      "push_time": "09:00",
+      "time_window_hours": 168,
+      "field_settings": [
+        {
+          "name": "时间序列预测",
+          "limit": 10,
+          "keywords": ["time series", "forecasting", "temporal", "probabilistic forecasting"],
+          "exclude_keywords": []
+        }
+      ],
+      "highlight": {
+        "title_keywords": ["time series", "forecasting", "temporal"],
+        "authors": [],
+        "venues": ["ICML", "NeurIPS", "ICLR", "AAAI", "KDD"]
+      }
+    }
+  ]
+}

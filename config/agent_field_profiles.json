@@ -1,15 +1,1 @@
-﻿{
-  "时间序列预测": {
-    "canonical_en": "time series forecasting",
-    "categories": ["cs.LG", "stat.ML"],
-    "keywords": [
-      "time series",
-      "forecasting",
-      "temporal",
-      "probabilistic forecasting",
-      "sequence modeling"
-    ],
-    "title_keywords": ["time series", "forecasting", "temporal"],
-    "venues": ["ICML", "NeurIPS", "ICLR", "AAAI", "KDD"]
-  }
-}
+﻿{}

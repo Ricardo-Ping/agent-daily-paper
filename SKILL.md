@@ -1,40 +1,56 @@
----
+﻿---
 name: agent-daily-paper
-description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文，按重要性排序并在每日固定时间推送中英双语卡片（英文标题/中文标题/英文摘要/中文摘要/arXiv 链接）。支持每领域独立数量上限（5-20）、关键词高亮、NEW/UPDATED 版本标识与 Markdown 存档。首次使用时必须先引导用户完成订阅配置（领域、每领域论文数、每日提醒时间、时区、关键词/排除词、翻译方式）。
+description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文，按重要性排序并以中英双语卡片形式推送（英文标题/中文标题/英文摘要/中文摘要/arXiv 链接）。支持每领域独立数量上限（5-20）、关键词高亮、NEW/UPDATED 版本标识、Markdown 存档，以及定时推送与即时推送双路径。首次使用时先完成订阅配置；领域可由 Agent 画像 JSON 自动补全英文名、关键词与会议列表。
 ---
 
 # Agent Daily Paper
 
 ## 执行原则
 
-- 首次使用时，先收集并确认配置，再执行推荐。
-- 配置缺失时，不直接抓取，先补齐配置。
-- 推送执行后，除了保存 Markdown 文件，还要在聊天中返回完整 Markdown 内容。
+- 首次使用先完成配置，再执行抓取与推送。
+- 若配置缺失，先补齐，不直接运行。
+- 推送完成后同时输出两份结果：
+  - 聊天内返回完整 Markdown 正文
+  - 落盘到 `output/daily/*.md`
 
-## 首次使用必填配置
+## 必填配置
 
-- 研究领域：`field_settings[].name`（可多个）
-- 每领域数量：`field_settings[].limit`（5-20）
-- 每日提醒时间：`push_time`（HH:MM）
-- 时区：`timezone`（默认 `Asia/Shanghai`）
+- `field_settings[].name`：研究领域名（可多个）
+- `field_settings[].limit`：每领域推荐数量（5-20）
+- `push_time`：每日推送时间（HH:MM）
+- `timezone`：时区（默认 `Asia/Shanghai`）
 
-## 建议配置
+## 可选配置
 
 - `keywords` / `exclude_keywords`
 - `time_window_hours`
 - `highlight.title_keywords` / `highlight.authors` / `highlight.venues`
-- `TRANSLATE_PROVIDER`：`openai` / `argos` / `auto` / `none`
+- 翻译提供方 `TRANSLATE_PROVIDER`：`openai` / `argos` / `auto` / `none`
 
-## 检索与排序规则
+## 领域解析策略
 
-- 检索不只依赖 arXiv 大类，使用“类别 + 标题/摘要关键词”召回。
-- 对细分方向（如“数据库优化器”）启用标题/摘要模糊匹配打分。
-- 默认按重要性分数排序：类别命中 + 关键词命中 + 模糊命中 + 新鲜度。
-- 若 24h 无结果，自动启用回退策略（扩大时间窗、可放宽关键词）。
+优先级：
+1. `config/agent_field_profiles.json`（默认路径，存在即优先）
+2. OpenAI 画像（可选兜底）
+3. 启发式规则（最终兜底）
+
+支持字段画像 JSON 结构：
+- `canonical_en`
+- `categories`
+- `keywords`
+- `title_keywords`
+- `venues`
+
+## 检索与排序
+
+- 检索采用“类别 + 标题/摘要关键词”召回，不依赖单一大类。
+- 细分方向支持模糊匹配评分（如“数据库优化器”）。
+- 重要性分数综合：类别命中 + 关键词命中 + 模糊命中 + 新鲜度。
+- 命中不足时可自动扩大时间窗口并放宽关键词。
 
 ## 输出规范
 
-每篇论文必须包含：
+每篇论文输出：
 - English Title
 - Chinese Title
 - English Abstract
@@ -42,22 +58,23 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - arXiv URL
 - Flags（`NEW` / `UPDATED(vX->vY)` + 高亮标签）
 
-Markdown 命名：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
+命名规则：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
 
 - 多领域时按领域分组。
 - 单领域时不分组。
 
 ## 运行命令
 
-- 调试（不写文件）：`python scripts/run_digest.py --dry-run --emit-markdown`
-- 正式运行：`python scripts/run_digest.py --emit-markdown`
-- 定时场景（如 GitHub Actions）：`python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+- 通用运行：
+  - `python scripts/run_digest.py --emit-markdown`
+- 定时轮询（GitHub Actions）：
+  - `python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+- 即时推送（不依赖 Actions）：
+  - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72`
 
-## 安装（Conda，跨系统）
+## 安装
 
-推荐环境名：`arxiv-digest-lab`
-
-Windows / macOS / Linux：
+推荐 Conda 环境：`arxiv-digest-lab`
 
 ```bash
 conda create -n arxiv-digest-lab python=3.10 -y
@@ -68,6 +85,6 @@ python -c "from argostranslate import package; package.update_package_index(); p
 
 ## 失败兜底
 
-- 翻译失败时输出 `[待翻译]`，不阻塞主流程。
-- 请求失败自动重试。
-- 若无论文命中，输出“当前窗口无新增论文”并给出统计。
+- 翻译失败输出 `[待翻译]`，不中断主流程。
+- API 请求自动重试。
+- 无命中时输出“当前窗口无新增论文”及统计信息。
