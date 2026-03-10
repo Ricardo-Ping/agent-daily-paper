@@ -54,6 +54,14 @@ flowchart TB
 
 ## 环境准备（Conda）
 
+推荐安装 skill 后先执行一键初始化（自动建环境、装依赖、装 Argos 模型、初始化配置）：
+
+```bash
+python scripts/bootstrap_env.py --run-doctor
+```
+
+等价手动步骤：
+
 ```bash
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
