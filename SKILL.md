@@ -65,6 +65,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 ## 运行命令
 
+- 健康检查：
+  - `python scripts/doctor.py`
 - 通用运行：
   - `python scripts/run_digest.py --emit-markdown`
 - 定时轮询（GitHub Actions）：

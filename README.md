@@ -66,6 +66,20 @@ python -c "from argostranslate import package; package.update_package_index(); p
 - `TRANSLATE_PROVIDER=auto`
 - `TRANSLATE_PROVIDER=none`
 
+## 健康检查（推荐先跑）
+
+```bash
+python scripts/doctor.py
+```
+
+检查项：
+- `config/subscriptions.json` 与 `data/state.json` 是否存在且可解析
+- 订阅配置字段完整性（`push_time`、`timezone`、`field_settings`、`limit`）
+- `config/agent_field_profiles.json` 格式
+- Argos 依赖与语言包状态
+- arXiv 网络连通性
+- GitHub Actions 工作流关键步骤
+
 ## 即时推送（不依赖 GitHub Actions）
 
 ### 一键执行
