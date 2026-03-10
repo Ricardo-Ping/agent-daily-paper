@@ -1,0 +1,3 @@
+display_name: arXiv Daily Digest
+short_description: 多研究领域 arXiv 每日定时论文推送
+default_prompt: 用户可订阅一个或多个研究领域；每天固定时间抓取 arXiv 最新论文，去重后生成中文精简推送。

@@ -1,0 +1,27 @@
+﻿{
+  "subscriptions": [
+    {
+      "id": "db-optimizer-validate",
+      "name": "DB Optimizer Validation",
+      "timezone": "Asia/Shanghai",
+      "push_time": "09:00",
+      "time_window_hours": 720,
+      "language": "zh-CN",
+      "keywords": ["database", "query optimizer", "query optimization", "cardinality estimation", "cost model"],
+      "exclude_keywords": ["survey"],
+      "field_settings": [
+        {
+          "name": "database",
+          "limit": 20,
+          "keywords": ["optimizer", "query plan", "join order", "cost-based"],
+          "exclude_keywords": []
+        }
+      ],
+      "highlight": {
+        "title_keywords": ["optimizer", "query", "cardinality", "cost model", "join"],
+        "authors": [],
+        "venues": ["SIGMOD", "VLDB", "ICDE", "KDD"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+﻿{
+  "subscriptions": [
+    {
+      "id": "rs-db-daily",
+      "name": "RecSys + DB Daily",
+      "timezone": "Asia/Shanghai",
+      "push_time": "09:00",
+      "time_window_hours": 24,
+      "language": "zh-CN",
+      "keywords": ["retrieval", "ranking"],
+      "exclude_keywords": ["survey"],
+      "field_settings": [
+        {
+          "name": "\u63a8\u8350\u7cfb\u7edf",
+          "limit": 20,
+          "keywords": ["recommendation", "recsys"],
+          "exclude_keywords": []
+        },
+        {
+          "name": "\u6570\u636e\u5e93",
+          "limit": 20,
+          "keywords": ["database", "query", "index"],
+          "exclude_keywords": []
+        }
+      ],
+      "highlight": {
+        "title_keywords": ["benchmark", "alignment", "in-context", "RAG"],
+        "authors": ["Yann LeCun", "Geoffrey Hinton", "Christopher D. Manning"],
+        "venues": ["ICLR", "ICML", "NeurIPS", "KDD", "SIGMOD", "VLDB"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+﻿# Python cache
+__pycache__/
+*.pyc
+
+# Runtime outputs
+output/daily/
+
+# Local envs
+.venv/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+
+# Temporary files
+.tmp*
+
+# Optional logs
+*.log
