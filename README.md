@@ -2,6 +2,12 @@
 
 `agent-daily-paper` 用于按研究领域聚合 arXiv 最新论文，并支持定时推送与即时推送两种运行模式。
 
+## 给 Agent 的一句话安装指令
+
+可以直接对 Agent 说：
+
+`帮我安装 https://github.com/Ricardo-Ping/agent-daily-paper.git 这个 skill，然后安装 arxiv-digest-lab 虚拟环境，并进行初始化设置。`
+
 核心能力：
 - 多领域订阅与每领域独立数量上限（5-20）
 - 输出英文标题、中文标题、英文摘要、中文摘要、arXiv 链接
