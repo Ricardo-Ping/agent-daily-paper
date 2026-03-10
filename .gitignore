@@ -11,6 +11,7 @@ Thumbs.db
 
 # Temporary files
 .tmp*
+config/subscriptions.instant.json
 
 # Optional logs
 *.log

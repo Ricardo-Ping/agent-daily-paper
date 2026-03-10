@@ -1,0 +1,9 @@
+﻿{
+  "数据库优化器": {
+    "canonical_en": "database query optimizer",
+    "categories": ["cs.DB"],
+    "keywords": ["database", "query optimizer", "execution plan", "cost model", "cardinality estimation", "join order"],
+    "title_keywords": ["optimizer", "query", "cost model", "execution plan"],
+    "venues": ["SIGMOD", "VLDB", "ICDE", "PODS", "CIDR"]
+  }
+}
