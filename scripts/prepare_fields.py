@@ -161,7 +161,13 @@ def build_field_setting(
         "venues": venues[:8],
     }
 
-    return setting, highlight, {"field": field_name, "canonical_en": canonical_en, "source": source}
+    return setting, highlight, {
+        "field": field_name,
+        "canonical_en": canonical_en,
+        "source": source,
+        "keywords": list(dict.fromkeys(keywords + [field_name]))[:16],
+        "venues": venues[:8],
+    }
 
 
 def main() -> int:
@@ -197,6 +203,7 @@ def main() -> int:
     merged_title_keywords: list[str] = []
     merged_venues: list[str] = []
     traces = []
+    field_profiles = []
 
     for f in fields:
         setting, highlight, trace = build_field_setting(
@@ -207,6 +214,15 @@ def main() -> int:
         )
         field_settings.append(setting)
         traces.append(trace)
+        field_profiles.append(
+            {
+                "field": trace.get("field", f),
+                "canonical_en": trace.get("canonical_en", setting.get("name", f)),
+                "keywords": trace.get("keywords", setting.get("keywords", [])),
+                "venues": trace.get("venues", highlight.get("venues", [])),
+                "source": trace.get("source", "heuristic"),
+            }
+        )
         merged_title_keywords += highlight.get("title_keywords", [])[:5]
         merged_venues += highlight.get("venues", [])[:6]
 
@@ -219,6 +235,7 @@ def main() -> int:
                 "push_time": args.push_time,
                 "time_window_hours": args.time_window_hours,
                 "field_settings": field_settings,
+                "field_profiles": field_profiles,
                 "highlight": {
                     "title_keywords": list(dict.fromkeys(merged_title_keywords))[:20],
                     "authors": [],

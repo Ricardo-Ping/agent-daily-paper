@@ -518,6 +518,46 @@ def render_markdown(
         lines.append("- Fallback: Enabled (expanded window and optional keyword relaxation)")
     lines.append("")
 
+    profile_rows: list[str] = []
+    raw_profiles = sub.get("field_profiles", [])
+    if isinstance(raw_profiles, list) and raw_profiles:
+        for item in raw_profiles:
+            if not isinstance(item, dict):
+                continue
+            field_cn = str(item.get("field", "")).strip()
+            canonical_en = str(item.get("canonical_en", "")).strip() or field_cn
+            keywords = [str(x).strip() for x in item.get("keywords", []) if str(x).strip()]
+            venues = [str(x).strip() for x in item.get("venues", []) if str(x).strip()]
+            if not field_cn and not canonical_en:
+                continue
+            profile_rows.append(f"- Field Profile: {field_cn or canonical_en}")
+            profile_rows.append(f"  - Canonical EN: {canonical_en}")
+            profile_rows.append(f"  - Keywords: {', '.join(keywords[:16]) if keywords else '(none)'}")
+            profile_rows.append(f"  - Venues/Journals: {', '.join(venues[:12]) if venues else '(none)'}")
+    else:
+        fs_map: dict[str, dict[str, Any]] = {}
+        for fs in sub.get("field_settings", []):
+            if isinstance(fs, dict):
+                fs_name = str(fs.get("name", "")).strip()
+                if fs_name:
+                    fs_map[fs_name] = fs
+        highlight = sub.get("highlight", {}) if isinstance(sub.get("highlight"), dict) else {}
+        venues = [str(x).strip() for x in highlight.get("venues", []) if str(x).strip()]
+        for f in field_names:
+            fs = fs_map.get(f, {})
+            keywords = [str(x).strip() for x in fs.get("keywords", []) if str(x).strip()]
+            canonical_en = f
+            profile_rows.append(f"- Field Profile: {f}")
+            profile_rows.append(f"  - Canonical EN: {canonical_en}")
+            profile_rows.append(f"  - Keywords: {', '.join(keywords[:16]) if keywords else '(none)'}")
+            profile_rows.append(f"  - Venues/Journals: {', '.join(venues[:12]) if venues else '(none)'}")
+
+    if profile_rows:
+        lines.append("## Field Profiles")
+        lines.append("")
+        lines.extend(profile_rows)
+        lines.append("")
+
     def block(i: int, p: Paper) -> list[str]:
         authors = p.authors[:3]
         author_text = ", ".join(authors) + (" et al." if len(p.authors) > 3 else "")
