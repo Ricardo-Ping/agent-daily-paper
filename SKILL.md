@@ -62,6 +62,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 - 多领域时按领域分组。
 - 单领域时不分组。
+- 日报头部必须包含 `Field Profiles`，每个领域给出：
+  - `Canonical EN`（英文领域名）
+  - `Keywords`（检索关键词）
+  - `Venues/Journals`（相关会议或期刊）
 
 ## 运行命令
 
@@ -73,6 +77,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
 - 即时推送（不依赖 Actions）：
   - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72`
+  - 默认仅输出完整 Markdown 正文到聊天（不附加 JSON 摘要）
 
 ## 安装
 
