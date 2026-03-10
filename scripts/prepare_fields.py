@@ -176,20 +176,22 @@ def main() -> int:
     parser.add_argument("--output", default="", help="Optional output path for subscriptions json")
     parser.add_argument(
         "--profiles-json",
-        default="",
-        help="Optional JSON file from agent model: {\"<field>\": {canonical_en,categories,keywords,title_keywords,venues}}",
+        default="config/agent_field_profiles.json",
+        help="Agent profile JSON path. Default: config/agent_field_profiles.json",
     )
     parser.add_argument("--no-openai", action="store_true", help="Disable OpenAI generation")
     args = parser.parse_args()
 
     fields = [x.strip() for x in args.fields.split(",") if x.strip()]
-    use_openai = (not args.no_openai) and bool(os.getenv("OPENAI_API_KEY")) and (not args.profiles_json)
+    use_openai = (not args.no_openai) and bool(os.getenv("OPENAI_API_KEY"))
     agent_profiles: dict[str, Any] = {}
-    if args.profiles_json:
+    if args.profiles_json and os.path.exists(args.profiles_json):
         with open(args.profiles_json, "r", encoding="utf-8-sig") as f:
             loaded = json.load(f)
         if isinstance(loaded, dict):
             agent_profiles = loaded
+            # When agent profiles are available, they are used as primary source.
+            use_openai = False
 
     field_settings = []
     merged_title_keywords: list[str] = []

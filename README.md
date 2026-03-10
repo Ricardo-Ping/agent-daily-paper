@@ -9,22 +9,38 @@
 - 定时推送（GitHub Actions）
 - 即时推送（命令行触发，不依赖 Actions）
 
-## 运行流程图
+## 运行流程图（Academic Style）
 
 ```mermaid
-flowchart LR
-    A[输入领域需求] --> B{运行模式}
+flowchart TB
+    classDef io fill:#f7f7f7,stroke:#666,stroke-width:1px,color:#111;
+    classDef process fill:#eaf3ff,stroke:#2b6cb0,stroke-width:1px,color:#111;
+    classDef decision fill:#fff7e6,stroke:#b7791f,stroke-width:1px,color:#111;
+    classDef output fill:#eafaf1,stroke:#2f855a,stroke-width:1px,color:#111;
 
-    B -->|即时| C[prepare_fields.py 生成 subscriptions 配置]
-    C --> D[run_digest.py 抓取 排序 翻译]
-    D --> E[输出完整 Markdown]
-    D --> F[保存 output/daily 归档]
+    U["用户输入领域需求"]:::io --> M{"运行模式"}:::decision
 
-    B -->|定时| G[GitHub Actions 轮询触发]
-    G --> H[run_digest.py --only-due-now]
-    H --> I{到点且未重复推送}
-    I -->|是| D
-    I -->|否| J[跳过本轮]
+    subgraph R1["即时推送路径"]
+      P1["prepare_fields.py<br/>字段标准化 + 关键词扩展 + 生成 subscriptions"]:::process
+      P2["run_digest.py<br/>检索 + 排序 + 翻译 + 去重"]:::process
+      O1["聊天返回完整 Markdown"]:::output
+      O2["写入 output/daily/*.md"]:::output
+      P1 --> P2 --> O1
+      P2 --> O2
+    end
+
+    subgraph R2["定时推送路径"]
+      G1["GitHub Actions 定时轮询"]:::process
+      G2["run_digest.py --only-due-now"]:::process
+      D1{"到点且当天未推送?"}:::decision
+      S1["跳过本轮"]:::io
+      G1 --> G2 --> D1
+      D1 -->|是| P2
+      D1 -->|否| S1
+    end
+
+    M -->|即时| P1
+    M -->|定时| G1
 ```
 
 ## 首次配置
@@ -58,6 +74,8 @@ python -c "from argostranslate import package; package.update_package_index(); p
 python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72
 ```
 
+默认会读取 `config/agent_field_profiles.json`（若存在）作为 Agent 字段画像输入。
+
 ### 分步执行
 
 ```bash
@@ -67,7 +85,7 @@ python scripts/run_digest.py --config config/subscriptions.instant.json --emit-m
 
 ## Agent 字段画像输入（可选）
 
-支持将 Agent 生成的领域画像 JSON 输入到 `prepare_fields.py`：
+支持将 Agent 生成的领域画像 JSON 输入到 `prepare_fields.py`。默认路径为 `config/agent_field_profiles.json`。
 
 ```json
 {

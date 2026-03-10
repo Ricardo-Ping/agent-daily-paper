@@ -27,7 +27,7 @@ def main() -> int:
     parser.add_argument("--timezone", default="Asia/Shanghai")
     parser.add_argument("--time-window-hours", type=int, default=24)
     parser.add_argument("--config-out", default="config/subscriptions.instant.json")
-    parser.add_argument("--profiles-json", default="", help="Optional field profile json from current agent model")
+    parser.add_argument("--profiles-json", default="config/agent_field_profiles.json", help="Agent profile json path")
     parser.add_argument("--no-openai", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
