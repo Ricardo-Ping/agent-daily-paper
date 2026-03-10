@@ -101,7 +101,7 @@ python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --li
 ```
 
 默认读取 `config/agent_field_profiles.json` 作为 Agent 字段画像输入（首次安装后应完成该文件配置）。
-默认输出“完整 Markdown 正文到聊天”，并同时落盘到 `output/daily/*.md`。
+默认输出“完整 Markdown 正文到聊天（与 `output/daily/*.md` 文件内容一致）”，并同时落盘到 `output/daily/*.md`。
 
 ### 分步执行
 

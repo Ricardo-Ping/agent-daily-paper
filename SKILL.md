@@ -12,7 +12,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 若 `config/subscriptions.json` 中 `setup_required=true`，必须先向用户收集配置并写入订阅；禁止直接按样例配置执行推送。
 - 若配置缺失，先补齐，不直接运行。
 - 推送完成后同时输出两份结果：
-  - 聊天内返回完整 Markdown 正文（不要只发附件或只给文件路径）
+  - 聊天内返回完整 Markdown 正文（与输出 md 文件逐字一致；不要只发标题+链接摘要）
   - 落盘到 `output/daily/*.md`
 
 ## 必填配置

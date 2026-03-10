@@ -78,9 +78,17 @@ def main() -> int:
         print(out)
         return 1
 
-    # Print full markdown for chat delivery by default.
+    # Print markdown from generated file first to guarantee chat output
+    # is exactly the same as saved .md content.
     first = results[0]
-    markdown = first.get("markdown", "")
+    markdown = ""
+    output_file = str(first.get("output_file", "")).strip()
+    if output_file:
+        md_path = (root / output_file).resolve() if not Path(output_file).is_absolute() else Path(output_file)
+        if md_path.exists():
+            markdown = md_path.read_text(encoding="utf-8", errors="replace")
+    if not markdown:
+        markdown = first.get("markdown", "")
     if markdown:
         print(markdown)
     if args.with_json_summary:
