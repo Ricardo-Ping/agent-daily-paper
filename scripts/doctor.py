@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -133,6 +134,16 @@ def check_argos() -> list[CheckResult]:
     return out
 
 
+def check_translate_runtime() -> CheckResult:
+    provider = os.getenv("TRANSLATE_PROVIDER", "auto").strip().lower()
+    has_openai = bool(os.getenv("OPENAI_API_KEY"))
+    if provider == "openai" and not has_openai:
+        return CheckResult("ERROR", "translate runtime", "TRANSLATE_PROVIDER=openai but OPENAI_API_KEY is missing")
+    if provider in ("auto", "openai") and has_openai:
+        return CheckResult("OK", "translate runtime", f"provider={provider}, OPENAI_API_KEY detected")
+    return CheckResult("WARN", "translate runtime", f"provider={provider}, OPENAI_API_KEY missing (will rely on Argos or fallback)")
+
+
 def check_arxiv_network() -> CheckResult:
     params = {
         "search_query": "cat:cs.AI",
@@ -201,6 +212,7 @@ def main() -> int:
     if config.exists():
         results.extend(check_subscriptions(config))
     results.append(check_agent_profiles(agent_profiles))
+    results.append(check_translate_runtime())
     results.extend(check_argos())
     results.append(check_arxiv_network())
     results.append(check_workflow(workflow))

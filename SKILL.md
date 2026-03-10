@@ -10,7 +10,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 首次使用先完成配置，再执行抓取与推送。
 - 若配置缺失，先补齐，不直接运行。
 - 推送完成后同时输出两份结果：
-  - 聊天内返回完整 Markdown 正文
+  - 聊天内返回完整 Markdown 正文（不要只发附件或只给文件路径）
   - 落盘到 `output/daily/*.md`
 
 ## 必填配置
@@ -82,7 +82,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
 pip install argostranslate
-python -c "from argostranslate import package; package.update_package_index(); p=[x for x in package.get_available_packages() if x.from_code=='en' and x.to_code=='zh'][0]; package.install_from_path(p.download())"
+python scripts/install_argos_model.py
 ```
 
 ## 失败兜底

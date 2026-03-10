@@ -30,6 +30,11 @@ def main() -> int:
     parser.add_argument("--profiles-json", default="config/agent_field_profiles.json", help="Agent profile json path")
     parser.add_argument("--no-openai", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--with-json-summary",
+        action="store_true",
+        help="Also print machine-readable JSON summary after markdown",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -73,13 +78,14 @@ def main() -> int:
         print(out)
         return 1
 
-    # Print full markdown for chat delivery first, then machine-readable summary.
+    # Print full markdown for chat delivery by default.
     first = results[0]
     markdown = first.get("markdown", "")
     if markdown:
         print(markdown)
-    print("\n---\n")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if args.with_json_summary:
+        print("\n---\n")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 

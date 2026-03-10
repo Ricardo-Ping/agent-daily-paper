@@ -57,7 +57,7 @@ flowchart TB
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
 pip install argostranslate
-python -c "from argostranslate import package; package.update_package_index(); p=[x for x in package.get_available_packages() if x.from_code=='en' and x.to_code=='zh'][0]; package.install_from_path(p.download())"
+python scripts/install_argos_model.py
 ```
 
 翻译提供方：
@@ -89,6 +89,7 @@ python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --li
 ```
 
 默认读取 `config/agent_field_profiles.json` 作为 Agent 字段画像输入（首次安装后应完成该文件配置）。
+默认输出“完整 Markdown 正文到聊天”，并同时落盘到 `output/daily/*.md`。
 
 ### 分步执行
 
@@ -139,6 +140,11 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
 - 执行 `run_digest.py --only-due-now --due-window-minutes 15`
 - 仅在到点窗口执行，且同订阅每天只推送一次
 - 有变更时自动提交 `output/daily` 与 `data/state.json`
+
+翻译说明：
+- GitHub Actions 运行在临时环境，若未配置 `OPENAI_API_KEY`，通常会出现 `[待翻译]`。
+- 建议在仓库 Secrets 中配置 `OPENAI_API_KEY`，并将 `TRANSLATE_PROVIDER` 设为 `openai` 或 `auto`。
+- 本地离线运行可用 Argos：先执行 `python scripts/install_argos_model.py`。
 
 ## 关键文件
 
