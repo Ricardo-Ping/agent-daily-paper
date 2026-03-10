@@ -18,29 +18,38 @@ flowchart TB
     classDef process fill:#eaf3ff,stroke:#2b6cb0,stroke-width:1px,color:#111;
     classDef decision fill:#fff7e6,stroke:#b7791f,stroke-width:1px,color:#111;
     classDef output fill:#eafaf1,stroke:#2f855a,stroke-width:1px,color:#111;
+    classDef model fill:#f3e8ff,stroke:#6b46c1,stroke-width:1px,color:#111;
 
-    U["用户输入领域需求"]:::io --> M{"运行模式"}:::decision
+    U["用户输入领域需求（中文）"]:::io --> B["bootstrap_env.py（环境与依赖）"]:::process
+    B --> P1["prepare_fields.py（领域画像生成）<br/>canonical_en/categories/keywords/venues"]:::process
+    P1 --> M{"运行模式"}:::decision
 
     subgraph R1["即时推送路径"]
-      P1["prepare_fields.py<br/>字段标准化 + 关键词扩展 + 生成 subscriptions"]:::process
-      P2["run_digest.py<br/>检索 + 排序 + 翻译 + 去重"]:::process
+      Q1["Category Recall<br/>query_strategy=category_first"]:::process
+      Q2["Primary Category Filter<br/>require_primary_category=true"]:::process
+      Q3["Embedding Filter<br/>BAAI/bge-m3 + threshold + top_k"]:::model
+      Q4["Agent Rerank<br/>model + top_k"]:::model
+      P2["run_digest.py<br/>综合打分 + NEW/UPDATED + 翻译"]:::process
       O1["聊天返回完整 Markdown"]:::output
       O2["写入 output/daily/*.md"]:::output
-      P1 --> P2 --> O1
+      Q1 --> Q2 --> Q3 --> Q4 --> P2 --> O1
       P2 --> O2
     end
 
     subgraph R2["定时推送路径"]
       G1["GitHub Actions 定时轮询"]:::process
       G2["run_digest.py --only-due-now"]:::process
-      D1{"到点且当天未推送?"}:::decision
-      S1["跳过本轮"]:::io
+      D1{"setup_required?"}:::decision
+      D2{"到点且当天未推送?"}:::decision
+      S1["跳过本轮（成功退出）"]:::io
       G1 --> G2 --> D1
-      D1 -->|是| P2
-      D1 -->|否| S1
+      D1 -->|是| S1
+      D1 -->|否| D2
+      D2 -->|是| Q1
+      D2 -->|否| S1
     end
 
-    M -->|即时| P1
+    M -->|即时| Q1
     M -->|定时| G1
 ```
 
