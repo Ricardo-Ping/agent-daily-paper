@@ -1,118 +1,136 @@
 ---
-name: arxiv-daily-field-digest
-description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文，按重要性排序并在每日固定时间推送中英双语卡片（英文标题/中文标题/英文摘要/中文摘要/arXiv 链接）。支持每领域独立数量上限、关键词高亮、NEW/UPDATED 版本标识与 Markdown 存档。
+name: agent-daily-paper
+description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文，按重要性排序并在每日固定时间推送中英双语卡片（英文标题、中文标题、英文摘要、中文摘要、arXiv 链接）。支持每领域独立数量上限（5-20）、关键词高亮、NEW/UPDATED 版本标识与 Markdown 存档。首次使用时必须先引导用户完成订阅配置（领域、每领域论文数、每日提醒时间、时区、关键词/排除词、翻译方式）。
 ---
 
-# arXiv Daily Field Digest
+# Agent Daily Paper
 
-## 1) 配置文件
+## 1) 首次使用（必须先配置）
 
-主配置：`config/subscriptions.json`
-状态文件：`data/state.json`
-输出目录：`output/daily`
+当用户第一次使用，或配置文件不存在/不完整时，必须先引导并确认以下配置，再执行抓取：
 
-## 2) 关键能力
+- 关注领域：`1..N` 个
+- 每领域论文数量：`5-20`
+- 每日提醒时间：如 `09:00`
+- 时区：默认 `Asia/Shanghai`
+- 关键词与排除词：可选
+- 翻译方式：`openai` / `argos` / `auto` / `none`
 
-- 用户可选一个或多个领域
-- 每领域独立 `limit`（强制 5-20）
-- 重要性排序（领域匹配 + 关键词命中 + 新鲜度）
+最小必填键：
+
+- `field_settings[].name`
+- `field_settings[].limit`
+- `push_time`
+- `timezone`
+
+若任一必填项缺失，不要直接运行推荐，先补齐配置。
+
+## 2) 配置与输出路径
+
+- 订阅配置：`config/subscriptions.json`
+- 状态文件：`data/state.json`
+- 输出目录：`output/daily`
+
+## 3) 核心能力
+
+- 支持单领域/多领域订阅
+- 每领域独立 `limit`（强制 `5-20`）
+- 按重要性排序（领域匹配 + 关键词命中 + 新鲜度）
 - 多领域时按领域分组；单领域时不分组
-- `NEW` / `UPDATED(vX->vY)` 标识
+- 版本标识：`NEW` / `UPDATED(vX->vY)`
 - 高亮规则：标题关键词 / 作者 / 会议
-- 输出为 Markdown，文件名：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
+- Markdown 存档命名：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
 
-## 3) 推荐配置结构
-
-使用 `field_settings` 定义每个领域：
+## 4) 推荐配置结构
 
 ```json
 {
-  "field_settings": [
-    {"name": "推荐系统", "limit": 20, "keywords": ["recsys"]},
-    {"name": "数据库", "limit": 20, "keywords": ["database"]}
-  ],
-  "highlight": {
-    "title_keywords": ["benchmark", "RAG"],
-    "authors": ["Yann LeCun"],
-    "venues": ["ICLR", "ICML", "NeurIPS"]
-  }
+  "subscriptions": [
+    {
+      "id": "rs-db-daily",
+      "name": "RecSys + DB Daily",
+      "timezone": "Asia/Shanghai",
+      "push_time": "09:00",
+      "time_window_hours": 24,
+      "field_settings": [
+        {"name": "推荐系统", "limit": 20, "keywords": ["recsys"]},
+        {"name": "数据库", "limit": 20, "keywords": ["query optimizer"]}
+      ],
+      "highlight": {
+        "title_keywords": ["benchmark", "RAG"],
+        "authors": ["Yann LeCun"],
+        "venues": ["ICLR", "ICML", "NeurIPS", "KDD", "SIGMOD", "VLDB"]
+      }
+    }
+  ]
 }
 ```
 
-## 4) 翻译方案（API 与免费离线）
+## 5) 翻译方式
 
-脚本按 `TRANSLATE_PROVIDER` 自动选择：
+通过环境变量 `TRANSLATE_PROVIDER` 选择：
 
-- `openai`：需要 `OPENAI_API_KEY`（质量更高）
-- `argos`：免费离线，无需云 API（需本地安装模型）
+- `openai`：需 `OPENAI_API_KEY`（质量更高）
+- `argos`：免费离线（需安装 `argostranslate` 与 `en->zh` 模型）
 - `auto`：先 OpenAI，失败后 Argos
 - `none`：不翻译，输出 `[待翻译]`
 
-### 4.1 OpenAI 方式
+## 6) 安装指引（按操作系统）
 
-```bash
-set OPENAI_API_KEY=你的Key
-set TRANSLATE_PROVIDER=openai
-python scripts/run_digest.py
-```
+优先建议使用 conda 环境 `arxiv-digest-lab`。
 
-### 4.2 免费离线 Argos 方式
+### Windows
 
-安装：
-
-```bash
+```powershell
+conda create -n arxiv-digest-lab python=3.10 -y
+conda activate arxiv-digest-lab
 pip install argostranslate
-```
-
-安装英->中模型（首次一次性）：
-
-```bash
 python -c "from argostranslate import package; package.update_package_index(); p=[x for x in package.get_available_packages() if x.from_code=='en' and x.to_code=='zh'][0]; package.install_from_path(p.download())"
 ```
 
-运行：
+### macOS / Linux
 
 ```bash
-set TRANSLATE_PROVIDER=argos
-python scripts/run_digest.py
+conda create -n arxiv-digest-lab python=3.10 -y
+conda activate arxiv-digest-lab
+pip install argostranslate
+python -c "from argostranslate import package; package.update_package_index(); p=[x for x in package.get_available_packages() if x.from_code=='en' and x.to_code=='zh'][0]; package.install_from_path(p.download())"
 ```
 
-## 5) 运行命令
+## 7) 运行命令
 
-调试不写文件：
+调试（不写文件）：
 
 ```bash
 python scripts/run_digest.py --dry-run
 ```
 
-正式生成：
+正式运行：
 
 ```bash
 python scripts/run_digest.py
 ```
 
-## 6) 输出字段
-
-每篇固定输出：
+## 8) 输出字段（每篇论文）
 
 - English Title
 - Chinese Title
 - English Abstract
 - 中文摘要
 - arXiv URL
-- Flags（NEW/UPDATED + 高亮命中）
+- Flags（`NEW/UPDATED` + 高亮标签）
 
-## 7) 失败降级
+## 9) 失败降级策略
 
-- API 请求失败自动重试 2 次
-- 翻译失败不阻塞主流程，保留 `[待翻译]`
-- 无新增结果时输出空结果说明
-## 8) 开发终端建议
+- API 失败：自动重试 2 次
+- 翻译失败：不阻塞主流程，保留 `[待翻译]`
+- 无新增：输出“当前窗口无新增论文”与统计信息
 
-推荐使用 UTF-8 + conda 环境启动脚本：
+## 10) 开发终端建议
 
-- PowerShell: scripts/dev-shell.ps1 
-- CMD: scripts/dev-shell.cmd 
+建议使用 UTF-8 + conda 启动脚本：
 
-目标环境默认：rxiv-digest-lab。
+- PowerShell：`scripts/dev-shell.ps1`
+- CMD：`scripts/dev-shell.cmd`
 
+默认环境：`arxiv-digest-lab`
