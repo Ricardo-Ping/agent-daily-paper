@@ -44,16 +44,13 @@ flowchart TB
     end
 
     subgraph R2["定时推送路径"]
-      G1["GitHub Actions 定时轮询"]:::process
-      G2["run_digest.py --only-due-now"]:::process
+      G1["本地 Cron / 任务计划程序<br/>按用户时间点精确触发"]:::process
+      G2["run_digest.py --emit-markdown"]:::process
       D1{"setup_required?"}:::decision
-      D2{"到点且当天未推送?"}:::decision
       S1["跳过本轮（成功退出）"]:::io
       G1 --> G2 --> D1
       D1 -->|是| S1
-      D1 -->|否| D2
-      D2 -->|是| Q1
-      D2 -->|否| S1
+      D1 -->|否| Q1
     end
 
     M -->|即时| Q1
@@ -221,37 +218,67 @@ python scripts/instant_digest.py --fields "推荐系统" --agent-categories-only
 - `primary_categories`：实际检索与主分类过滤使用的分类集合（核心）
 - `categories`：扩展后的参考分类信息（用于画像展示与候选补充，不直接替代主分类约束）
 
-## 定时推送（推荐本地 cron / 任务计划程序）
+## 定时推送（推荐精确 cron / 任务计划程序）
 
 对于“安装到本地的 skill”，默认应使用本机调度器，而不是依赖把仓库推到 GitHub 才能运行。
+
+推荐原则：
+
+- 按用户设置的 `push_time + timezone` 创建“精确到点”的定时任务。
+- 不要默认写成“每 10 分钟 / 每 15 分钟轮询一次”。
+- 例如用户设置 `12:00` 且时区为 `Asia/Shanghai`，就应直接创建：
+  - `Cron: 0 12 * * *`
+  - `Timezone: Asia/Shanghai`
+- 执行命令应保持简洁，直接运行日报脚本即可，不需要 `--only-due-now --due-window-minutes 15`。
 
 推荐命令：
 
 ```bash
-python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15
+python scripts/run_digest.py --config config/subscriptions.json --emit-markdown
 ```
 
-Linux / macOS `cron` 示例（每 10 分钟轮询一次）：
+Linux / macOS `cron` 示例（用户设置为每天 12:00，时区 `Asia/Shanghai`）：
 
 ```cron
-*/10 * * * * cd /path/to/agent-daily-paper && /path/to/conda/envs/arxiv-digest-lab/bin/python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 >> cron.log 2>&1
+CRON_TZ=Asia/Shanghai
+0 12 * * * cd /path/to/agent-daily-paper && conda run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown >> cron.log 2>&1
+```
+
+如果你更喜欢直接使用环境里的 Python，也可以写成：
+
+```cron
+CRON_TZ=Asia/Shanghai
+0 12 * * * cd /path/to/agent-daily-paper && /path/to/conda/envs/arxiv-digest-lab/bin/python scripts/run_digest.py --config config/subscriptions.json --emit-markdown >> cron.log 2>&1
 ```
 
 Windows 任务计划程序可等价设置为：
 
-- 触发器：每 10 分钟执行一次
-- 程序：`conda run`
-- 参数：`-n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15`
+- 触发器：每天一次，时间为用户设置的本地时间（如 `12:00`）
+- 时区：用户 `timezone` 对应的本地时区
+- 程序：`conda`
+- 参数：`run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
 - 起始位置：仓库根目录
+
+如果 agent 平台自带 cron / automation，也应按同样原则创建：
+
+- `12:00 + Asia/Shanghai` -> `0 12 * * * (Asia/Shanghai)`
+- `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
+- `21:45 + Asia/Shanghai` -> `45 21 * * * (Asia/Shanghai)`
+
+只有在“一个共享任务需要兼容多个不同时间点订阅”或“平台不支持精确 cron”时，才退回轮询模式：
+
+```bash
+python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 --emit-markdown
+```
 
 ## GitHub Actions（可选远端方案）
 
 工作流文件：`.github/workflows/daily-digest.yml`
 
 机制：
-- 每 10 分钟轮询触发（UTC cron）
-- 执行 `run_digest.py --only-due-now --due-window-minutes 15`
-- 真正是否执行，仍按订阅中的本地 `timezone + push_time`
+- GitHub Actions 只能用于“仓库已推送到 GitHub”的远端运行场景
+- 若使用 Actions，仍建议按实际需要单独设置 UTC `cron`
+- 真正的业务时间仍应与用户本地 `timezone + push_time` 保持一致
 - 仅在到点窗口执行，且同订阅每天只推送一次
 - 有变更时自动提交 `output/daily` 与 `data/state.json`
 

@@ -11,6 +11,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 环境引导命令：`python scripts/bootstrap_env.py --run-doctor`
 - taxonomy 本地知识库同步：`python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json`
 - `push_time` 必须按用户 `timezone` 的本地时间理解，不能按 UTC 理解。
+- 如果用户要求定时推送，优先创建“精确到点”的 cron / 自动任务，而不是 15 分钟轮询。
+- cron 表达式应直接由用户时间生成，例如：
+  - `12:00 + Asia/Shanghai` -> `0 12 * * * (Asia/Shanghai)`
+  - `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
 - 若 `config/subscriptions.json` 中 `setup_required=true`，必须先向用户收集配置并写入订阅；禁止直接按样例配置执行推送。
 - 若配置缺失，先补齐，不直接运行。
 - 仅执行本仓库内与 arXiv 推送相关的操作；禁止插入或执行无关任务（如配额监控、其他项目脚本）。
@@ -94,8 +98,12 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `python scripts/doctor.py`
 - 通用运行：
   - `python scripts/run_digest.py --emit-markdown`
-- 定时轮询（推荐本地 cron / 任务计划程序）：
-  - `python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+- 精确 cron / 定时任务（推荐）：
+  - `python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
+- 精确 cron 示例：
+  - `0 12 * * * (Asia/Shanghai)` -> `cd <repo> && conda run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
+- 只有在平台不支持精确 cron，或者一个共享任务需要兼容多个时间点订阅时，才使用轮询模式：
+  - `python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 --emit-markdown`
 - GitHub Actions 仅是可选远端方案，不应作为“安装到本地 skill 后”的默认调度方式。
 - 即时推送（不依赖 Actions）：
   - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72`
