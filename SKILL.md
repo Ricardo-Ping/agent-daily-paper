@@ -16,9 +16,15 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `12:00 + Asia/Shanghai` -> `0 12 * * * (Asia/Shanghai)`
   - `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
 - 若用户使用 OpenClaw cron / automation，可优先采用以下执行模板：
-  - 在 `/home/<user>/.openclaw/workspace/agent-daily-paper` 执行：
-  - `export PATH="/home/<user>/miniconda3/bin:/home/<user>/.nvm/versions/node/<node-version>/bin:/usr/local/bin:/home/<user>/.local/bin:/home/<user>/.bun/bin:/usr/bin:/bin:/home/<user>/.nvm/current/bin:/home/<user>/.npm-global/bin:/home/<user>/bin:/home/<user>/.volta/bin:/home/<user>/.asdf/shims:/home/<user>/.fnm/current/bin:/home/<user>/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
-  - 其中 `/home/<user>` 与 `<node-version>` 必须替换为当前机器的真实路径
+  - 在 `/home/USER_HOME/.openclaw/workspace/agent-daily-paper` 执行：
+  - `export PATH="/home/USER_HOME/miniconda3/bin:/home/USER_HOME/.nvm/versions/node/NODE_VERSION/bin:/usr/local/bin:/home/USER_HOME/.local/bin:/home/USER_HOME/.bun/bin:/usr/bin:/bin:/home/USER_HOME/.nvm/current/bin:/home/USER_HOME/.npm-global/bin:/home/USER_HOME/bin:/home/USER_HOME/.volta/bin:/home/USER_HOME/.asdf/shims:/home/USER_HOME/.fnm/current/bin:/home/USER_HOME/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+  - 其中 `USER_HOME` 与 `NODE_VERSION` 必须替换为当前机器的真实路径
+  - 若要补充投递配置，可使用：
+    - `delivery.mode: announce`
+    - `delivery.channel: feishu`
+    - `delivery.to: user:FEISHU_USER_ID`
+    - `cron: 0 12 * * *`
+    - `timezone: Asia/Shanghai`
 - 若采用上述 OpenClaw 模板，输出必须严格遵守：
   - `reason=already_pushed_today` -> `今天该领域已推送过`
   - 无命中且未推送 -> `当天该领域无最新论文`

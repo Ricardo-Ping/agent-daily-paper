@@ -268,14 +268,28 @@ Windows 任务计划程序可等价设置为：
 OpenClaw cron / automation 文案可参考：
 
 ```text
-在 /home/<user>/.openclaw/workspace/agent-daily-paper 执行：
-export PATH="/home/<user>/miniconda3/bin:/home/<user>/.nvm/versions/node/<node-version>/bin:/usr/local/bin:/home/<user>/.local/bin:/home/<user>/.bun/bin:/usr/bin:/bin:/home/<user>/.nvm/current/bin:/home/<user>/.npm-global/bin:/home/<user>/bin:/home/<user>/.volta/bin:/home/<user>/.asdf/shims:/home/<user>/.fnm/current/bin:/home/<user>/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown
+在 /home/USER_HOME/.openclaw/workspace/agent-daily-paper 执行：
+export PATH="/home/USER_HOME/miniconda3/bin:/home/USER_HOME/.nvm/versions/node/NODE_VERSION/bin:/usr/local/bin:/home/USER_HOME/.local/bin:/home/USER_HOME/.bun/bin:/usr/bin:/bin:/home/USER_HOME/.nvm/current/bin:/home/USER_HOME/.npm-global/bin:/home/USER_HOME/bin:/home/USER_HOME/.volta/bin:/home/USER_HOME/.asdf/shims:/home/USER_HOME/.fnm/current/bin:/home/USER_HOME/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown
 ```
 
 其中：
-- `/home/<user>` 替换为当前机器的真实用户名目录
-- `<node-version>` 替换为本机实际 Node 版本目录
+- `USER_HOME` 替换为当前机器的真实用户名目录
+- `NODE_VERSION` 替换为本机实际 Node 版本目录
 - 如果环境变量已正确配置，可进一步精简为只保留 `conda run ...`
+
+如果需要同时写清“投递到 Feishu 当前会话”的标准模板，可补充为：
+
+```text
+delivery.mode: announce
+delivery.channel: feishu
+delivery.to: user:FEISHU_USER_ID
+cron: 0 12 * * *
+timezone: Asia/Shanghai
+```
+
+其中：
+- `FEISHU_USER_ID` 替换为当前接收人的真实 Feishu 用户 ID
+- `cron` 与 `timezone` 必须和用户配置的 `push_time + timezone` 一致
 
 如果使用上述 OpenClaw 执行模板，输出规则必须严格遵守：
 
