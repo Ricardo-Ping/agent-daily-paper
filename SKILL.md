@@ -15,6 +15,14 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - cron 表达式应直接由用户时间生成，例如：
   - `12:00 + Asia/Shanghai` -> `0 12 * * * (Asia/Shanghai)`
   - `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
+- 若用户使用 OpenClaw cron / automation，可优先采用以下执行模板：
+  - 在 `/home/<user>/.openclaw/workspace/agent-daily-paper` 执行：
+  - `export PATH="/home/<user>/miniconda3/bin:/home/<user>/.nvm/versions/node/<node-version>/bin:/usr/local/bin:/home/<user>/.local/bin:/home/<user>/.bun/bin:/usr/bin:/bin:/home/<user>/.nvm/current/bin:/home/<user>/.npm-global/bin:/home/<user>/bin:/home/<user>/.volta/bin:/home/<user>/.asdf/shims:/home/<user>/.fnm/current/bin:/home/<user>/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+  - 其中 `/home/<user>` 与 `<node-version>` 必须替换为当前机器的真实路径
+- 若采用上述 OpenClaw 模板，输出必须严格遵守：
+  - `reason=already_pushed_today` -> `今天该领域已推送过`
+  - 无命中且未推送 -> `当天该领域无最新论文`
+  - 有论文 -> 原样返回完整 Markdown 正文，不要摘要、不要 JSON、不要解释
 - 若 `config/subscriptions.json` 中 `setup_required=true`，必须先向用户收集配置并写入订阅；禁止直接按样例配置执行推送。
 - 若配置缺失，先补齐，不直接运行。
 - 仅执行本仓库内与 arXiv 推送相关的操作；禁止插入或执行无关任务（如配额监控、其他项目脚本）。
@@ -102,6 +110,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
 - 精确 cron 示例：
   - `0 12 * * * (Asia/Shanghai)` -> `cd <repo> && conda run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
+- OpenClaw cron 兼容模板：
+  - `0 12 * * * (Asia/Shanghai)` + `export PATH="..." && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
 - 只有在平台不支持精确 cron，或者一个共享任务需要兼容多个时间点订阅时，才使用轮询模式：
   - `python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 --emit-markdown`
 - GitHub Actions 仅是可选远端方案，不应作为“安装到本地 skill 后”的默认调度方式。

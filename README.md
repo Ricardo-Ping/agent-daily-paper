@@ -265,6 +265,28 @@ Windows 任务计划程序可等价设置为：
 - `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
 - `21:45 + Asia/Shanghai` -> `45 21 * * * (Asia/Shanghai)`
 
+OpenClaw cron / automation 文案可参考：
+
+```text
+在 /home/<user>/.openclaw/workspace/agent-daily-paper 执行：
+export PATH="/home/<user>/miniconda3/bin:/home/<user>/.nvm/versions/node/<node-version>/bin:/usr/local/bin:/home/<user>/.local/bin:/home/<user>/.bun/bin:/usr/bin:/bin:/home/<user>/.nvm/current/bin:/home/<user>/.npm-global/bin:/home/<user>/bin:/home/<user>/.volta/bin:/home/<user>/.asdf/shims:/home/<user>/.fnm/current/bin:/home/<user>/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown
+```
+
+其中：
+- `/home/<user>` 替换为当前机器的真实用户名目录
+- `<node-version>` 替换为本机实际 Node 版本目录
+- 如果环境变量已正确配置，可进一步精简为只保留 `conda run ...`
+
+如果使用上述 OpenClaw 执行模板，输出规则必须严格遵守：
+
+1. 若 `reason=already_pushed_today`，返回：`今天该领域已推送过`
+2. 若无命中且未推送，返回：`当天该领域无最新论文`
+3. 若有论文，原样返回完整 Markdown 正文，不要摘要、不要 JSON、不要额外解释
+
+说明：
+- 对于 OpenClaw 这类平台，若已经能设置精确 cron，则推荐直接使用精确时间触发。
+- 上述 `--only-due-now --due-window-minutes 15` 模板更适合作为兼容型执行模板或共享轮询任务模板。
+
 只有在“一个共享任务需要兼容多个不同时间点订阅”或“平台不支持精确 cron”时，才退回轮询模式：
 
 ```bash
