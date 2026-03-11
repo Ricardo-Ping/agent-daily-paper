@@ -3,6 +3,7 @@ name: Daily arXiv Digest
 on:
   workflow_dispatch:
   schedule:
+    # UTC poll only. Actual execution time is decided by subscription timezone + push_time in run_digest.py.
     - cron: "*/10 * * * *"
 
 permissions:

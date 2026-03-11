@@ -14,7 +14,7 @@
 - 输出英文标题、中文标题、英文摘要、中文摘要、arXiv 链接
 - 日报头部输出领域画像：英文领域名、关键词、相关会议/期刊
 - `NEW/UPDATED` 标记与 Markdown 归档
-- 定时推送（GitHub Actions）
+- 定时推送（默认使用本地 cron / 任务计划程序；GitHub Actions 仅可选）
 - 即时推送（命令行触发，不依赖 Actions）
 
 ## 运行流程图（Academic Style）
@@ -68,8 +68,15 @@ flowchart TB
 订阅配置至少包含：
 - `field_settings[].name`
 - `field_settings[].limit`（5-20）
-- `push_time`（HH:MM）
+- `push_time`（HH:MM，本地时间）
 - `timezone`（例如 `Asia/Shanghai`）
+
+## 时间语义
+
+- `push_time` 始终按 `timezone` 对应的本地时间解释，不按 UTC 解释。
+- 例如：`push_time=12:00` 且 `timezone=Asia/Shanghai`，表示上海时间中午 `12:00`。
+- GitHub Actions 的 `cron` 本身使用 UTC，但本项目工作流只是“轮询是否到点”；真正是否执行，由 `run_digest.py` 按订阅里的本地 `timezone + push_time` 判断。
+- 如果某个 agent 把你说的“12 点”直接当成 UTC 去创建外部自动任务，那是调度层做错了，不是本项目的 `push_time` 语义。
 
 ## 环境准备（Conda）
 
@@ -214,15 +221,43 @@ python scripts/instant_digest.py --fields "推荐系统" --agent-categories-only
 - `primary_categories`：实际检索与主分类过滤使用的分类集合（核心）
 - `categories`：扩展后的参考分类信息（用于画像展示与候选补充，不直接替代主分类约束）
 
-## 定时推送（GitHub Actions）
+## 定时推送（推荐本地 cron / 任务计划程序）
+
+对于“安装到本地的 skill”，默认应使用本机调度器，而不是依赖把仓库推到 GitHub 才能运行。
+
+推荐命令：
+
+```bash
+python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15
+```
+
+Linux / macOS `cron` 示例（每 10 分钟轮询一次）：
+
+```cron
+*/10 * * * * cd /path/to/agent-daily-paper && /path/to/conda/envs/arxiv-digest-lab/bin/python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 >> cron.log 2>&1
+```
+
+Windows 任务计划程序可等价设置为：
+
+- 触发器：每 10 分钟执行一次
+- 程序：`conda run`
+- 参数：`-n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15`
+- 起始位置：仓库根目录
+
+## GitHub Actions（可选远端方案）
 
 工作流文件：`.github/workflows/daily-digest.yml`
 
 机制：
-- 每 10 分钟轮询触发
+- 每 10 分钟轮询触发（UTC cron）
 - 执行 `run_digest.py --only-due-now --due-window-minutes 15`
+- 真正是否执行，仍按订阅中的本地 `timezone + push_time`
 - 仅在到点窗口执行，且同订阅每天只推送一次
 - 有变更时自动提交 `output/daily` 与 `data/state.json`
+
+注意：
+- 只有当仓库真的推到 GitHub 且 Actions 已开启时，这条链路才会运行。
+- 对于“本地安装给 agent 使用”的场景，不应该把 GitHub Actions 当成默认调度方式。
 
 翻译说明：
 - GitHub Actions 运行在临时环境，若未配置 `OPENAI_API_KEY`，通常会出现 `[待翻译]`。

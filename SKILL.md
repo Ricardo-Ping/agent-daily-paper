@@ -10,6 +10,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 首次使用必须先执行环境引导，再完成配置，再执行抓取与推送。
 - 环境引导命令：`python scripts/bootstrap_env.py --run-doctor`
 - taxonomy 本地知识库同步：`python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json`
+- `push_time` 必须按用户 `timezone` 的本地时间理解，不能按 UTC 理解。
 - 若 `config/subscriptions.json` 中 `setup_required=true`，必须先向用户收集配置并写入订阅；禁止直接按样例配置执行推送。
 - 若配置缺失，先补齐，不直接运行。
 - 仅执行本仓库内与 arXiv 推送相关的操作；禁止插入或执行无关任务（如配额监控、其他项目脚本）。
@@ -21,7 +22,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 - `field_settings[].name`：研究领域名（可多个）
 - `field_settings[].limit`：每领域推荐数量（5-20）
-- `push_time`：每日推送时间（HH:MM）
+- `push_time`：每日推送时间（HH:MM，本地时间）
 - `timezone`：时区（默认 `Asia/Shanghai`）
 
 ## 可选配置
@@ -93,8 +94,9 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `python scripts/doctor.py`
 - 通用运行：
   - `python scripts/run_digest.py --emit-markdown`
-- 定时轮询（GitHub Actions）：
+- 定时轮询（推荐本地 cron / 任务计划程序）：
   - `python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+- GitHub Actions 仅是可选远端方案，不应作为“安装到本地 skill 后”的默认调度方式。
 - 即时推送（不依赖 Actions）：
   - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72`
   - 默认仅输出完整 Markdown 正文到聊天（不附加 JSON 摘要）
