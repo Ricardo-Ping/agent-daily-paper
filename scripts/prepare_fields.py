@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -777,6 +778,9 @@ def _persist_seed_artifacts(
     embed_model_name: str,
     docs_dir: Path,
     emb_dir: Path,
+    seed_query_terms: list[str] | None = None,
+    seed_category_bias: list[str] | None = None,
+    seed_fingerprint: str | None = None,
 ) -> dict[str, str]:
     slug = _slugify(canonical_en or field_name)
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -828,6 +832,8 @@ def _persist_seed_artifacts(
                 "title_en": str(p.get("title_en", "")).strip(),
                 "authors": [str(x).strip() for x in p.get("authors", []) if str(x).strip()],
                 "abstract_en": str(p.get("abstract_en", "")).strip(),
+                "primary_category": _canonicalize_category(str(p.get("primary_category", ""))),
+                "categories": [_canonicalize_category(str(x)) for x in p.get("categories", []) if str(x).strip()],
                 "url": str(p.get("url", "")).strip(),
                 "text_for_embedding": text,
                 "embedding": [float(x) for x in list(v)],
@@ -837,12 +843,91 @@ def _persist_seed_artifacts(
         "field": field_name,
         "canonical_en": canonical_en,
         "model": embed_model_name,
+        "seed_query_terms": list(seed_query_terms or []),
+        "seed_category_bias": list(seed_category_bias or []),
+        "seed_fingerprint": str(seed_fingerprint or ""),
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "count": len(rows),
         "items": rows,
     }
     emb_path.write_text(json.dumps(emb_obj, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"seed_doc_md": str(md_path).replace("\\", "/"), "seed_embedding_json": str(emb_path).replace("\\", "/")}
+
+
+def _build_seed_fingerprint(
+    field_name: str,
+    canonical_en: str,
+    keywords: list[str],
+    context_text: str,
+    top_k: int,
+    embed_model_name: str,
+) -> str:
+    payload = {
+        "field_name": str(field_name).strip().lower(),
+        "canonical_en": str(canonical_en).strip().lower(),
+        "keywords": sorted({str(k).strip().lower() for k in keywords if str(k).strip()}),
+        "context_text": re.sub(r"\s+", " ", str(context_text or "").strip().lower()),
+        "top_k": int(top_k),
+        "embed_model_name": str(embed_model_name or "").strip().lower(),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _load_seed_cache(
+    field_name: str,
+    canonical_en: str,
+    docs_dir: Path,
+    emb_dir: Path,
+    expected_fingerprint: str,
+) -> dict[str, Any] | None:
+    slug = _slugify(canonical_en or field_name)
+    md_path = docs_dir / f"{slug}.md"
+    emb_path = emb_dir / f"{slug}.json"
+    if not emb_path.exists():
+        return None
+    try:
+        data = json.loads(emb_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    got_fp = str(data.get("seed_fingerprint", "")).strip()
+    if not got_fp or got_fp != expected_fingerprint:
+        return None
+    items = data.get("items", [])
+    if not isinstance(items, list) or not items:
+        return None
+
+    seed_papers: list[dict[str, Any]] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        cats = [_canonicalize_category(str(x)) for x in row.get("categories", []) if str(x).strip()]
+        primary = _canonicalize_category(str(row.get("primary_category", "")))
+        if not cats and not primary:
+            # Old cache format (missing category fields) should be rebuilt to keep category inference stable.
+            return None
+        seed_papers.append(
+            {
+                "arxiv_id": str(row.get("arxiv_id", "")).strip(),
+                "title_en": str(row.get("title_en", "")).strip(),
+                "authors": [str(x).strip() for x in row.get("authors", []) if str(x).strip()],
+                "abstract_en": str(row.get("abstract_en", "")).strip(),
+                "primary_category": primary,
+                "categories": cats,
+                "url": str(row.get("url", "")).strip(),
+            }
+        )
+    if not seed_papers:
+        return None
+
+    return {
+        "seed_papers": seed_papers,
+        "seed_query_terms": [str(x).strip() for x in data.get("seed_query_terms", []) if str(x).strip()],
+        "seed_category_bias": [_canonicalize_category(str(x)) for x in data.get("seed_category_bias", []) if str(x).strip()],
+        "seed_doc_md": str(md_path).replace("\\", "/"),
+        "seed_embedding_json": str(emb_path).replace("\\", "/"),
+        "cache_hit": True,
+    }
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -971,6 +1056,9 @@ def build_field_setting(
     known_codes: set[str] | None = None,
     seed_top_k: int = 20,
     seed_embed_model: str = "BAAI/bge-m3",
+    seed_docs_dir: str = "output/seed_corpus/docs",
+    seed_embeddings_dir: str = "output/seed_corpus/embeddings",
+    seed_force_refresh: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     profile = agent_profile
     source = "agent" if profile else "heuristic"
@@ -1004,24 +1092,61 @@ def build_field_setting(
             "Please add categories in config/agent_field_profiles.json."
         )
 
-    seed_category_bias = _taxonomy_suggest_categories(
+    seed_fingerprint = _build_seed_fingerprint(
         field_name=field_name,
-        canonical_en=canonical_en,
-        keywords=keywords,
-        taxonomy_rows=taxonomy_rows or {},
-        preferred_groups=[c.split(".", 1)[0] for c in agent_categories if "." in c],
-        top_n=6,
-    )
-    seed_category_bias = _validate_categories(seed_category_bias, valid_codes)
-
-    seed_papers, seed_query_terms = _build_seed_corpus(
         canonical_en=canonical_en,
         keywords=keywords,
         context_text=field_context,
         top_k=seed_top_k,
         embed_model_name=seed_embed_model,
-        category_bias=seed_category_bias,
     )
+    docs_dir = Path(seed_docs_dir)
+    emb_dir = Path(seed_embeddings_dir)
+    cache = None if seed_force_refresh else _load_seed_cache(
+        field_name=field_name,
+        canonical_en=canonical_en,
+        docs_dir=docs_dir,
+        emb_dir=emb_dir,
+        expected_fingerprint=seed_fingerprint,
+    )
+
+    if cache:
+        seed_papers = list(cache.get("seed_papers", []))
+        seed_query_terms = list(cache.get("seed_query_terms", []))
+        seed_category_bias = [_canonicalize_category(str(x)) for x in cache.get("seed_category_bias", []) if str(x).strip()]
+        artifacts = {
+            "seed_doc_md": str(cache.get("seed_doc_md", "")).strip(),
+            "seed_embedding_json": str(cache.get("seed_embedding_json", "")).strip(),
+        }
+    else:
+        seed_category_bias = _taxonomy_suggest_categories(
+            field_name=field_name,
+            canonical_en=canonical_en,
+            keywords=keywords,
+            taxonomy_rows=taxonomy_rows or {},
+            preferred_groups=[c.split(".", 1)[0] for c in agent_categories if "." in c],
+            top_n=6,
+        )
+        seed_category_bias = _validate_categories(seed_category_bias, valid_codes)
+        seed_papers, seed_query_terms = _build_seed_corpus(
+            canonical_en=canonical_en,
+            keywords=keywords,
+            context_text=field_context,
+            top_k=seed_top_k,
+            embed_model_name=seed_embed_model,
+            category_bias=seed_category_bias,
+        )
+        artifacts = _persist_seed_artifacts(
+            field_name=field_name,
+            canonical_en=canonical_en,
+            seed_papers=seed_papers,
+            embed_model_name=seed_embed_model,
+            docs_dir=docs_dir,
+            emb_dir=emb_dir,
+            seed_query_terms=seed_query_terms,
+            seed_category_bias=seed_category_bias,
+            seed_fingerprint=seed_fingerprint,
+        )
     seed_prior_categories = _collect_prior_categories(seed_papers, valid_codes)
     seed_keywords = _infer_keywords_from_seed(
         canonical_en=canonical_en,
@@ -1094,18 +1219,22 @@ def build_field_setting(
         "seed_prior_categories": seed_prior_categories,
         "seed_category_bias": seed_category_bias,
         "seed_keywords": seed_keywords,
-                "seed_papers": [
-                    {
-                        "arxiv_id": p.get("arxiv_id", ""),
-                        "title_en": p.get("title_en", ""),
-                        "authors": p.get("authors", []),
-                        "abstract_en": p.get("abstract_en", ""),
-                        "primary_category": p.get("primary_category", ""),
-                        "categories": p.get("categories", []),
-                        "url": p.get("url", ""),
+        "seed_papers": [
+            {
+                "arxiv_id": p.get("arxiv_id", ""),
+                "title_en": p.get("title_en", ""),
+                "authors": p.get("authors", []),
+                "abstract_en": p.get("abstract_en", ""),
+                "primary_category": p.get("primary_category", ""),
+                "categories": p.get("categories", []),
+                "url": p.get("url", ""),
             }
             for p in seed_papers
         ],
+        "seed_cache_hit": bool(cache),
+        "seed_fingerprint": seed_fingerprint,
+        "seed_doc_md": artifacts.get("seed_doc_md", ""),
+        "seed_embedding_json": artifacts.get("seed_embedding_json", ""),
     }
 
 
@@ -1184,6 +1313,11 @@ def main() -> int:
         help="Directory for saving seed title+abstract embeddings per field",
     )
     parser.add_argument(
+        "--seed-force-refresh",
+        action="store_true",
+        help="Force refresh seed corpus even if fingerprint cache matches",
+    )
+    parser.add_argument(
         "--use-openai-profile",
         action="store_true",
         help="Opt-in: use OpenAI Responses API for profile generation when agent profile is missing",
@@ -1231,16 +1365,10 @@ def main() -> int:
             known_codes=known_codes,
             seed_top_k=args.seed_top_k,
             seed_embed_model=args.seed_embed_model,
+            seed_docs_dir=args.seed_docs_dir,
+            seed_embeddings_dir=args.seed_embeddings_dir,
+            seed_force_refresh=args.seed_force_refresh,
         )
-        artifacts = _persist_seed_artifacts(
-            field_name=f,
-            canonical_en=str(trace.get("canonical_en", setting.get("name", f))),
-            seed_papers=trace.get("seed_papers", []),
-            embed_model_name=args.seed_embed_model,
-            docs_dir=docs_dir,
-            emb_dir=emb_dir,
-        )
-        trace.update(artifacts)
         field_settings.append(setting)
         traces.append(trace)
         field_profiles.append(
@@ -1257,6 +1385,8 @@ def main() -> int:
                 "seed_papers": trace.get("seed_papers", []),
                 "seed_doc_md": trace.get("seed_doc_md", ""),
                 "seed_embedding_json": trace.get("seed_embedding_json", ""),
+                "seed_cache_hit": bool(trace.get("seed_cache_hit", False)),
+                "seed_fingerprint": trace.get("seed_fingerprint", ""),
                 "source": trace.get("source", "heuristic"),
             }
         )

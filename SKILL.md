@@ -88,6 +88,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - `prepare_fields.py` 会在每个领域落盘 Top-K 种子语料：
   - `output/seed_corpus/docs/<canonical_en>.md`（标题、作者、摘要、链接）
   - `output/seed_corpus/embeddings/<canonical_en>.json`（标题+摘要 embedding）
+- 默认启用“领域指纹缓存”：若领域画像不变，后续运行直接复用 seed 语料与向量，不再重抓 Top-K。
+- 如需强制刷新种子语料，执行 `prepare_fields.py` 时加 `--seed-force-refresh`。
 
 ## 输出规范
 

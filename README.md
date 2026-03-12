@@ -165,6 +165,8 @@ python scripts/run_digest.py --config config/subscriptions.instant.json --emit-m
 `prepare_fields.py` 在每个领域上会额外保存 Top-K 种子语料（默认 K=20）：
 - 文档：`output/seed_corpus/docs/<canonical_en>.md`（标题、作者、摘要、链接）
 - 向量：`output/seed_corpus/embeddings/<canonical_en>.json`（`title+abstract` 的 embedding）
+- 默认启用“领域指纹缓存”：当领域画像未变化时，后续运行直接复用本地 seed 语料与向量，不再重新抓取 Top-K。
+- 如需强制重抓（例如想刷新种子语料），可加：`--seed-force-refresh`
 
 ## arXiv Taxonomy 本地知识库（默认接入）
 
