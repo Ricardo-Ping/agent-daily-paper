@@ -13,6 +13,7 @@
 - 本地 `arXiv taxonomy` 知识库（`data/arxiv_taxonomy.json`），用于领域分类校验与补全
 - 输出英文标题、中文标题、英文摘要、中文摘要、arXiv 链接
 - 默认启用 `PDF 全文解读`（每篇输出单段中文论文解读，默认不少于 500 字）
+- 论文解读写作风格由 `SKILL.md` 约束（读者视角、评审式总结、避免关键词机械拼接）
 - 日报头部输出领域画像：英文领域名、关键词、相关会议/期刊
 - `NEW/UPDATED` 标记与 Markdown 归档
 - 定时推送（默认使用本地 cron / 任务计划程序；GitHub Actions 仅可选）
@@ -89,7 +90,7 @@ python scripts/bootstrap_env.py --run-doctor
 ```bash
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
-pip install argostranslate sentence-transformers
+pip install argostranslate pypdf sentence-transformers
 python scripts/install_argos_model.py
 python scripts/install_embedding_model.py --model BAAI/bge-m3
 python scripts/install_embedding_model.py --kind reranker --model BAAI/bge-reranker-v2-m3
@@ -205,6 +206,14 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
     "enabled": true,
     "model": "BAAI/bge-reranker-v2-m3",
     "top_k": 40
+  },
+  "insight_mode": "pdf",
+  "insight_lang": "zh",
+  "insight_min_chars": 300,
+  "insight_embed_model": "BAAI/bge-m3",
+  "insight_paragraph_min_chars": 500,
+  "insight_pdf_max_pages": 20,
+  "insight_pdf_timeout_sec": 35
   }
 }
 ```
