@@ -390,6 +390,23 @@ def main() -> int:
     parser.add_argument("--rerank-model", default="BAAI/bge-reranker-v2-m3")
     parser.add_argument("--rerank-top-k", type=int, default=40)
     parser.add_argument(
+        "--insight-mode",
+        default="pdf",
+        choices=["pdf", "abstract"],
+        help="Paper insight source. Default: pdf",
+    )
+    parser.add_argument(
+        "--insight-lang",
+        default="zh",
+        choices=["zh", "en"],
+        help="Paper insight output language. Default: zh",
+    )
+    parser.add_argument("--insight-min-chars", type=int, default=300)
+    parser.add_argument("--insight-embed-model", default="BAAI/bge-m3")
+    parser.add_argument("--insight-paragraph-min-chars", type=int, default=500)
+    parser.add_argument("--insight-pdf-max-pages", type=int, default=20)
+    parser.add_argument("--insight-pdf-timeout-sec", type=int, default=35)
+    parser.add_argument(
         "--category-expand-mode",
         default="balanced",
         choices=["off", "conservative", "balanced", "broad"],
@@ -484,6 +501,13 @@ def main() -> int:
                     "model": args.rerank_model,
                     "top_k": args.rerank_top_k,
                 },
+                "insight_mode": args.insight_mode,
+                "insight_lang": args.insight_lang,
+                "insight_min_chars": args.insight_min_chars,
+                "insight_embed_model": args.insight_embed_model,
+                "insight_paragraph_min_chars": args.insight_paragraph_min_chars,
+                "insight_pdf_max_pages": args.insight_pdf_max_pages,
+                "insight_pdf_timeout_sec": args.insight_pdf_timeout_sec,
                 "highlight": {
                     "title_keywords": list(dict.fromkeys(merged_title_keywords))[:20],
                     "authors": [],

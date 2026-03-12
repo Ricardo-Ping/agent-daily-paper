@@ -56,6 +56,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - `embedding_filter.model` / `embedding_filter.threshold` / `embedding_filter.top_k`
 - `agent_rerank.model`（默认 `BAAI/bge-reranker-v2-m3`）/ `agent_rerank.top_k`
 - `highlight.title_keywords` / `highlight.authors` / `highlight.venues`
+- `insight_mode`（默认 `pdf`，可选 `abstract`）
+- `insight_pdf_max_pages` / `insight_pdf_timeout_sec`
 - 翻译提供方 `TRANSLATE_PROVIDER`：`openai` / `argos` / `auto` / `none`
 
 ## 领域解析策略
@@ -93,7 +95,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 中文摘要
 - arXiv URL
 - Flags（`NEW` / `UPDATED(vX->vY)` + 高亮标签）
-- Agent 解读：`解决问题` / `核心思路` / `创新点`
+- Agent 解读：单段中文长文（默认不少于 500 字，基于 PDF 全文语义凝练，失败时回退摘要）
+- 解读内容必须自然覆盖：问题边界、方法主线、创新贡献；禁止关键词拼接式机械句
 
 命名规则：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
 
@@ -133,7 +136,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 ```bash
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
-pip install argostranslate
+pip install argostranslate pypdf
 python scripts/install_argos_model.py
 pip install sentence-transformers
 python scripts/install_embedding_model.py --model BAAI/bge-m3
@@ -144,3 +147,19 @@ python scripts/install_embedding_model.py --model BAAI/bge-m3
 - 翻译失败输出 `[待翻译]`，不中断主流程。
 - API 请求自动重试。
 - 无命中时输出“当前窗口无新增论文”及统计信息。
+
+## 单篇论文解读写作规范（Agent）
+
+当用户单独提交一篇论文要求解读时，Agent 按以下步骤执行，不依赖固定关键词拼接。
+这些写作规则属于 Agent 行为规范，维护在 `SKILL.md` 中，不应在 `run_digest.py` 里硬编码风格替换规则。
+
+1. 阅读 PDF 全文（至少覆盖 Abstract / Introduction / Method / Contributions / Conclusion）。
+2. 提炼三类关键信息并重写：
+   - 问题定义与现实痛点（为什么现有方法不足）
+   - 技术路线与关键机制（模块、流程、关键设计）
+   - 创新贡献与增量价值（新增了什么、为何有效）
+3. 输出一段连续中文解读（建议 500-800 字）：
+   - 采用评审式总结口吻，不拆成机械条目
+   - 必须使用读者视角（“本文/该研究”），不要使用作者自述视角（“我们提出/我们设计”）
+   - 尽量避免照抄原句，强调凝练和可读性
+   - 少堆实验指标，多解释贡献逻辑与方法价值
