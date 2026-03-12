@@ -765,6 +765,86 @@ def build_highlight_tags(paper: Paper, highlight: dict[str, Any]) -> list[str]:
     return tags
 
 
+def _split_sentences(text: str) -> list[str]:
+    normalized = " ".join((text or "").strip().split())
+    if not normalized:
+        return []
+    parts = re.split(r"(?<=[。！？!?\.])\s+", normalized)
+    out: list[str] = []
+    for p in parts:
+        s = p.strip()
+        if not s:
+            continue
+        out.append(s)
+    return out
+
+
+def _truncate_line(text: str, max_len: int = 220) -> str:
+    s = (text or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3].rstrip() + "..."
+
+
+def _pick_sentence(
+    sentences: list[str],
+    cue_words: list[str],
+    used: set[int],
+) -> str:
+    for i, s in enumerate(sentences):
+        if i in used:
+            continue
+        low = s.lower()
+        if any(c in low for c in cue_words):
+            used.add(i)
+            return s
+    for i, s in enumerate(sentences):
+        if i not in used:
+            used.add(i)
+            return s
+    return ""
+
+
+def summarize_paper_insight(paper: Paper) -> tuple[str, str, str]:
+    zh_abstract = (paper.abstract_zh or "").strip()
+    has_zh = bool(zh_abstract) and not zh_abstract.startswith("[待翻译]")
+
+    if has_zh:
+        sentences = _split_sentences(zh_abstract)
+        used: set[int] = set()
+        problem = _pick_sentence(sentences, ["问题", "挑战", "瓶颈", "困难", "关键", "仍然"], used)
+        core = _pick_sentence(sentences, ["提出", "设计", "构建", "方法", "框架", "通过", "采用"], used)
+        innovation = _pick_sentence(sentences, ["创新", "首次", "显著", "提升", "优于", "改进", "达到"], used)
+        return (
+            _truncate_line(problem or "摘要未明确问题定义。"),
+            _truncate_line(core or "摘要未明确核心方法。"),
+            _truncate_line(innovation or "摘要未明确创新点。"),
+        )
+
+    en_sentences = _split_sentences(paper.abstract_en or "")
+    used_en: set[int] = set()
+    en_problem = _pick_sentence(
+        en_sentences,
+        ["challenge", "problem", "difficult", "limitation", "bottleneck", "critical", "remain"],
+        used_en,
+    )
+    en_core = _pick_sentence(
+        en_sentences,
+        ["we propose", "we present", "introduce", "design", "framework", "method", "approach"],
+        used_en,
+    )
+    en_innovation = _pick_sentence(
+        en_sentences,
+        ["novel", "first", "significant", "improve", "state-of-the-art", "outperform", "achieve"],
+        used_en,
+    )
+    return (
+        _truncate_line(f"[基于英文摘要] {en_problem or 'Problem statement not explicit in abstract.'}"),
+        _truncate_line(f"[基于英文摘要] {en_core or 'Core approach not explicit in abstract.'}"),
+        _truncate_line(f"[基于英文摘要] {en_innovation or 'Innovation not explicit in abstract.'}"),
+    )
+
+
 def to_local(dt: datetime, tz_name: str) -> datetime:
     if ZoneInfo is None:
         return dt
@@ -853,6 +933,7 @@ def render_markdown(
         author_text = ", ".join(authors) + (" et al." if len(p.authors) > 3 else "")
         updated_local = to_local(p.updated, tz_name).strftime("%Y-%m-%d %H:%M")
         flags = [p.status] + p.highlight_tags
+        problem, core, innovation = summarize_paper_insight(p)
         return [
             f"## {i}. {p.title_en}",
             "",
@@ -869,6 +950,11 @@ def render_markdown(
             "",
             "### 中文摘要",
             p.abstract_zh,
+            "",
+            "### 论文解读（Agent）",
+            f"- 解决问题: {problem}",
+            f"- 核心思路: {core}",
+            f"- 创新点: {innovation}",
             "",
         ]
 

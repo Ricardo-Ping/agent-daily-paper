@@ -93,6 +93,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 中文摘要
 - arXiv URL
 - Flags（`NEW` / `UPDATED(vX->vY)` + 高亮标签）
+- Agent 解读：`解决问题` / `核心思路` / `创新点`
 
 命名规则：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
 
