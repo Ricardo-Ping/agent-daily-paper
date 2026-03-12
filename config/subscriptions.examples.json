@@ -11,7 +11,6 @@
       "fallback_relax_keywords": true,
       "query_strategy": "category_keyword_union",
       "require_primary_category": true,
-      "history_scope": "subscription",
       "category_expand_mode": "balanced",
       "embedding_filter": {
         "enabled": true,
@@ -55,7 +54,6 @@
       "time_window_hours": 168,
       "query_strategy": "category_keyword_union",
       "require_primary_category": true,
-      "history_scope": "subscription",
       "category_expand_mode": "balanced",
       "embedding_filter": {
         "enabled": true,

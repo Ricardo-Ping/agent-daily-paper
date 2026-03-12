@@ -91,15 +91,16 @@ python scripts/bootstrap_env.py --run-doctor
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
 pip install argostranslate pypdf sentence-transformers
-python scripts/install_argos_model.py
+python scripts/install_argos_model.py --from-code zh --to-code en
+python scripts/install_argos_model.py --from-code en --to-code zh
 python scripts/install_embedding_model.py --model BAAI/bge-m3
 python scripts/install_embedding_model.py --kind reranker --model BAAI/bge-reranker-v2-m3
 python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json
 ```
 
 翻译提供方：
-- `TRANSLATE_PROVIDER=argos`（离线）
-- `TRANSLATE_PROVIDER=openai`（需 `OPENAI_API_KEY`）
+- `TRANSLATE_PROVIDER=argos`（离线，默认）
+- `TRANSLATE_PROVIDER=openai`（需 `OPENAI_API_KEY` + `OPENAI_TRANSLATE_MODEL`）
 - `TRANSLATE_PROVIDER=auto`
 - `TRANSLATE_PROVIDER=none`
 
@@ -128,6 +129,7 @@ python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --li
 默认读取 `config/agent_field_profiles.json` 作为 Agent 字段画像输入（首次安装后应完成该文件配置）。
 默认输出“完整 Markdown 正文到聊天（与 `output/daily/*.md` 文件内容一致）”，并同时落盘到 `output/daily/*.md`。
 默认使用忽略历史模式，避免首次配置被旧状态误拦截；如需按历史去重可加 `--respect-history`。
+中文领域会先翻译为英文 `canonical_en`，再执行分类与 arXiv 检索（arXiv 不支持中文检索）；若输入本身已是英文，则直接使用，不做翻译。
 
 ### 分步执行
 
@@ -138,7 +140,8 @@ python scripts/run_digest.py --config config/subscriptions.instant.json --emit-m
 
 ## Agent 字段画像输入（默认启用）
 
-`prepare_fields.py` 默认使用 `config/agent_field_profiles.json`，建议作为标准配置文件长期维护。
+`prepare_fields.py` 默认使用 `config/agent_field_profiles.json`，建议作为标准配置文件长期维护。  
+如果该文件为空或未命中字段，不会中断；会自动走“seed+taxonomy+heuristic”生成临时字段画像并写入 `subscriptions*.json` 的 `field_profiles`。
 
 ```json
 {
@@ -158,6 +161,10 @@ python scripts/run_digest.py --config config/subscriptions.instant.json --emit-m
 python scripts/prepare_fields.py --fields "数据库优化器" --profiles-json config/agent_field_profiles.json --output config/subscriptions.instant.json
 python scripts/run_digest.py --config config/subscriptions.instant.json --emit-markdown
 ```
+
+`prepare_fields.py` 在每个领域上会额外保存 Top-K 种子语料（默认 K=20）：
+- 文档：`output/seed_corpus/docs/<canonical_en>.md`（标题、作者、摘要、链接）
+- 向量：`output/seed_corpus/embeddings/<canonical_en>.json`（`title+abstract` 的 embedding）
 
 ## arXiv Taxonomy 本地知识库（默认接入）
 
@@ -185,7 +192,7 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
 2. `require_primary_category=true`（仅保留主分类命中）
 3. `embedding_filter`（本地向量相似度过滤）
 4. `agent_rerank`（本地语义重排，默认 `BAAI/bge-reranker-v2-m3`）
-5. `history_scope=subscription`（按订阅隔离去重）
+5. 订阅级去重（仅使用 `sent_versions_by_sub`）
 6. `category_expand_mode`（`off/conservative/balanced/broad`）
 
 `subscriptions.json` 示例：
@@ -194,7 +201,6 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
 {
   "query_strategy": "category_keyword_union",
   "require_primary_category": true,
-  "history_scope": "subscription",
   "category_expand_mode": "balanced",
   "embedding_filter": {
     "enabled": true,
@@ -227,6 +233,11 @@ python scripts/instant_digest.py --fields "推荐系统" --agent-categories-only
 分类字段说明：
 - `primary_categories`：实际检索与主分类过滤使用的分类集合（核心）
 - `categories`：扩展后的参考分类信息（用于画像展示与候选补充，不直接替代主分类约束）
+
+去重状态说明：
+- 已逐步弃用全局 `sent_ids/sent_versions`。
+- 当前仅使用 `data/state.json -> sent_versions_by_sub` 做去重。
+- state 每 7 天自动清空一次去重记录（不影响当天是否已推送判断）。
 
 ## 定时推送（推荐精确 cron / 任务计划程序）
 
@@ -335,7 +346,8 @@ python scripts/run_digest.py --config config/subscriptions.json --only-due-now -
 翻译说明：
 - GitHub Actions 运行在临时环境，若未配置 `OPENAI_API_KEY`，通常会出现 `[待翻译]`。
 - 建议在仓库 Secrets 中配置 `OPENAI_API_KEY`，并将 `TRANSLATE_PROVIDER` 设为 `openai` 或 `auto`。
-- 本地离线运行可用 Argos：先执行 `python scripts/install_argos_model.py`。
+- 本地离线运行可用 Argos：先执行 `python scripts/install_argos_model.py --from-code zh --to-code en` 与 `python scripts/install_argos_model.py --from-code en --to-code zh`。
+- 若 `prepare_fields.py` 无法把中文领域转成英文 canonical，会直接报错并提示安装 `zh->en` 模型或在 `agent_field_profiles.json` 提供英文 `canonical_en`。
 
 ## 关键文件
 
@@ -347,3 +359,70 @@ python scripts/run_digest.py --config config/subscriptions.json --only-due-now -
 - `config/agent_field_profiles.json`：Agent 字段画像输入（默认读取，建议按需维护）
 - `config/agent_field_profiles.example.json`：字段画像示例模板
 - `output/daily/`：每日归档目录
+
+## 单篇论文解读写作规范（与 SKILL 同步）
+
+当用户单独提交一篇论文要求解读时，Agent 必须优先阅读 PDF 全文（至少覆盖 Abstract / Introduction / Method / Experiments / Conclusion），并使用以下固定提示词框架进行中文结构化输出。  
+这些规则属于 Agent 行为规范，维护在 `SKILL.md` 中，不应在 `run_digest.py` 里硬编码风格替换规则。
+
+推荐提示词（可直接复用）：
+
+```text
+你是一名科研助手。请仔细阅读以下论文，并对其进行系统、结构化的分析与解读。
+
+请按照以下结构输出：
+
+研究问题（Research Problem）
+- 论文试图解决什么问题？
+- 为什么这个问题重要？
+- 现有方法有哪些局限？
+
+核心思想（Core Idea）
+- 论文的核心直觉是什么？
+- 作者提出了什么关键思想使方法有效？
+
+方法（Method）
+详细解释论文的方法，包括：
+- 模型整体架构
+- 各个模块的作用
+
+实验设计（Experiments）
+总结实验设置，包括：
+- 使用的数据集
+- 对比方法（Baselines）
+- 评价指标
+- 实验结果
+
+并解释：
+- 为什么该方法效果更好？
+- 实验是否充分？
+
+主要贡献（Contributions）
+列出论文的主要贡献。
+
+优点（Strengths）
+分析该工作的优势，例如：
+- 方法创新性
+- 实验设计
+- 实际应用价值
+
+局限性（Limitations）
+指出可能存在的问题，例如：
+- 方法假设
+- 实验不足
+- 可扩展性问题
+
+对研究者的启示（Research Insights）
+- 该论文最值得学习的思想是什么？
+- 未来可以如何改进或扩展？
+
+11. 通俗解释
+用简单易懂的语言解释这篇论文，使研究生能够快速理解核心思想。
+
+请使用清晰的小标题和条理化结构进行中文输出。输出的内容不少于1000字。
+```
+
+输出约束：
+- 必须使用读者视角（“本文/该研究”），不要使用作者自述视角（“我们提出/我们设计”）。
+- 禁止逐句翻译论文原文；要做信息提炼、逻辑重组与批判性分析。
+- 优先引用方法与实验中的关键设计，不要只重复摘要内容。

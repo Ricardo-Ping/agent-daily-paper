@@ -12,6 +12,18 @@ Thumbs.db
 # Temporary files
 .tmp*
 config/subscriptions.instant.json
+config/subscriptions.instant*.json
+config/subscriptions.*.test.json
+config/tmp*.json
+
+# Generated outputs
+output/daily/*.md
+!output/daily/.gitkeep
+output/seed_corpus/docs/*.md
+output/seed_corpus/embeddings/*.json
+
+# Runtime artifacts
+scripts/__pycache__/
 
 # Optional logs
 *.log

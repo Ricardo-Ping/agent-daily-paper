@@ -52,9 +52,9 @@ def check_subscriptions(config_path: Path) -> list[CheckResult]:
     if isinstance(cfg, dict) and bool(cfg.get("setup_required", False)):
         return [
             CheckResult(
-                "ERROR",
+                "WARN",
                 "subscriptions.json",
-                "setup_required=true: 请先完成初始配置（领域、数量、推送时间、时区）再运行。",
+                "setup_required=true: 尚未完成首次配置（这是预期状态）。请先填写领域、数量、推送时间、时区。",
             )
         ]
 
@@ -132,25 +132,46 @@ def check_argos() -> list[CheckResult]:
     out.append(CheckResult("OK", "argostranslate", "installed"))
     try:
         langs = argos_translate.get_installed_languages()
-        has_en = any(x.code == "en" for x in langs)
-        has_zh = any(x.code in ("zh", "zh_CN") for x in langs)
-        if has_en and has_zh:
-            out.append(CheckResult("OK", "argos model", "en/zh language packs detected"))
+        en = next((x for x in langs if str(getattr(x, "code", "")).lower() == "en"), None)
+        zh = next((x for x in langs if str(getattr(x, "code", "")).lower().startswith("zh")), None)
+        if not en or not zh:
+            out.append(CheckResult("WARN", "argos model", "en/zh language packs may be missing"))
+            return out
+        ok_en_zh = False
+        ok_zh_en = False
+        try:
+            tr = en.get_translation(zh)
+            ok_en_zh = tr is not None and hasattr(tr, "translate")
+        except Exception:
+            ok_en_zh = False
+        try:
+            tr = zh.get_translation(en)
+            ok_zh_en = tr is not None and hasattr(tr, "translate")
+        except Exception:
+            ok_zh_en = False
+        if ok_en_zh and ok_zh_en:
+            out.append(CheckResult("OK", "argos model", "en<->zh translators verified"))
+        elif ok_en_zh or ok_zh_en:
+            out.append(CheckResult("WARN", "argos model", "only one-way translator is available (en<->zh incomplete)"))
         else:
-            out.append(CheckResult("WARN", "argos model", "en/zh model may be missing"))
+            out.append(CheckResult("WARN", "argos model", "en<->zh translators unavailable; run install_argos_model.py"))
     except Exception as exc:
         out.append(CheckResult("WARN", "argos model", f"cannot inspect model: {exc}"))
     return out
 
 
 def check_translate_runtime() -> CheckResult:
-    provider = os.getenv("TRANSLATE_PROVIDER", "auto").strip().lower()
+    provider = os.getenv("TRANSLATE_PROVIDER", "argos").strip().lower()
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
     if provider == "openai" and not has_openai:
         return CheckResult("ERROR", "translate runtime", "TRANSLATE_PROVIDER=openai but OPENAI_API_KEY is missing")
     if provider in ("auto", "openai") and has_openai:
         return CheckResult("OK", "translate runtime", f"provider={provider}, OPENAI_API_KEY detected")
-    return CheckResult("WARN", "translate runtime", f"provider={provider}, OPENAI_API_KEY missing (will rely on Argos or fallback)")
+    if provider in ("argos", "auto"):
+        return CheckResult("OK", "translate runtime", f"provider={provider}, local Argos path available")
+    if provider == "none":
+        return CheckResult("WARN", "translate runtime", "provider=none, translation disabled")
+    return CheckResult("WARN", "translate runtime", f"provider={provider}, OPENAI_API_KEY missing")
 
 
 def check_arxiv_network() -> CheckResult:

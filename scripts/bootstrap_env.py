@@ -57,8 +57,22 @@ def install_packages(
     run([conda, "run", "-n", env_name, "python", "-m", "pip", "install", "sentence-transformers"], cwd=root)
 
     if not skip_argos_model:
+        print("[BOOTSTRAP] Installing Argos zh->en model...")
+        run(
+            [
+                conda, "run", "-n", env_name, "python", "scripts/install_argos_model.py",
+                "--from-code", "zh", "--to-code", "en",
+            ],
+            cwd=root,
+        )
         print("[BOOTSTRAP] Installing Argos en->zh model...")
-        run([conda, "run", "-n", env_name, "python", "scripts/install_argos_model.py"], cwd=root)
+        run(
+            [
+                conda, "run", "-n", env_name, "python", "scripts/install_argos_model.py",
+                "--from-code", "en", "--to-code", "zh",
+            ],
+            cwd=root,
+        )
     else:
         print("[BOOTSTRAP] Skipping Argos model installation by flag.")
 
@@ -118,10 +132,10 @@ def ensure_state_file(state_path: Path) -> None:
     state_path.write_text(
         json.dumps(
             {
-                "sent_ids": [],
-                "sent_versions": {},
+                "sent_versions_by_sub": {},
                 "last_run_at": None,
                 "last_push_date_by_sub": {},
+                "last_state_reset_at": None,
             },
             ensure_ascii=False,
             indent=2,

@@ -49,7 +49,6 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - `time_window_hours`
 - `query_strategy`（推荐 `category_keyword_union`）
 - `require_primary_category`（推荐 `true`）
-- `history_scope`（推荐 `subscription`，避免跨订阅误去重）
 - `category_expand_mode`（`off/conservative/balanced/broad`）
 - `agent-categories-only`（仅使用 Agent 提供分类；缺失分类则报错）
 - `taxonomy-json`（默认 `data/arxiv_taxonomy.json`，用于分类合法性校验与补全）
@@ -58,15 +57,16 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - `highlight.title_keywords` / `highlight.authors` / `highlight.venues`
 - `insight_mode`（默认 `pdf`，可选 `abstract`）
 - `insight_pdf_max_pages` / `insight_pdf_timeout_sec`
-- 翻译提供方 `TRANSLATE_PROVIDER`：`openai` / `argos` / `auto` / `none`
+- 翻译提供方 `TRANSLATE_PROVIDER`：`argos`(默认) / `openai`(需 `OPENAI_API_KEY` + `OPENAI_TRANSLATE_MODEL`) / `auto` / `none`
 
 ## 领域解析策略
 
 优先级：
 1. `config/agent_field_profiles.json`（默认路径，存在即优先）
-2. taxonomy 知识库校验与补全（`data/arxiv_taxonomy.json`）
-3. OpenAI 画像（可选兜底）
-4. 启发式规则（最终兜底）
+2. 中文领域先翻译为英文 `canonical_en`（再做分类与检索，避免中文 arXiv 查询；若输入已是英文则直接使用）
+3. taxonomy 知识库校验与补全（`data/arxiv_taxonomy.json`）
+4. OpenAI 画像（可选兜底）
+5. 启发式规则（最终兜底）
 
 支持字段画像 JSON 结构：
 - `canonical_en`
@@ -85,6 +85,9 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 细分方向支持模糊匹配评分（如“数据库优化器”）。
 - 重要性分数综合：类别命中 + 关键词命中 + 模糊命中 + 新鲜度。
 - 命中不足时可自动扩大时间窗口并放宽关键词。
+- `prepare_fields.py` 会在每个领域落盘 Top-K 种子语料：
+  - `output/seed_corpus/docs/<canonical_en>.md`（标题、作者、摘要、链接）
+  - `output/seed_corpus/embeddings/<canonical_en>.json`（标题+摘要 embedding）
 
 ## 输出规范
 
@@ -109,6 +112,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 分类字段约定：
   - `primary_categories`：检索与过滤实际使用的主分类
   - `categories`：扩展参考分类（展示用）
+- 去重状态约定：
+  - 仅使用 `data/state.json -> sent_versions_by_sub`
+  - 全局 `sent_ids/sent_versions` 视为弃用字段，不再参与去重
+  - 去重状态每 7 天自动清空一次
 
 ## 运行命令
 
@@ -137,7 +144,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 conda create -n arxiv-digest-lab python=3.10 -y
 conda activate arxiv-digest-lab
 pip install argostranslate pypdf
-python scripts/install_argos_model.py
+python scripts/install_argos_model.py --from-code zh --to-code en
+python scripts/install_argos_model.py --from-code en --to-code zh
 pip install sentence-transformers
 python scripts/install_embedding_model.py --model BAAI/bge-m3
 ```
@@ -150,16 +158,67 @@ python scripts/install_embedding_model.py --model BAAI/bge-m3
 
 ## 单篇论文解读写作规范（Agent）
 
-当用户单独提交一篇论文要求解读时，Agent 按以下步骤执行，不依赖固定关键词拼接。
-这些写作规则属于 Agent 行为规范，维护在 `SKILL.md` 中，不应在 `run_digest.py` 里硬编码风格替换规则。
+当用户单独提交一篇论文要求解读时，Agent 必须优先阅读 PDF 全文（至少覆盖 Abstract / Introduction / Method / Experiments / Conclusion），并使用以下固定提示词框架进行中文结构化输出。  
+这些规则属于 Agent 行为规范，维护在 `SKILL.md` 中，不应在 `run_digest.py` 里硬编码风格替换规则。
 
-1. 阅读 PDF 全文（至少覆盖 Abstract / Introduction / Method / Contributions / Conclusion）。
-2. 提炼三类关键信息并重写：
-   - 问题定义与现实痛点（为什么现有方法不足）
-   - 技术路线与关键机制（模块、流程、关键设计）
-   - 创新贡献与增量价值（新增了什么、为何有效）
-3. 输出一段连续中文解读（建议 500-800 字）：
-   - 采用评审式总结口吻，不拆成机械条目
-   - 必须使用读者视角（“本文/该研究”），不要使用作者自述视角（“我们提出/我们设计”）
-   - 尽量避免照抄原句，强调凝练和可读性
-   - 少堆实验指标，多解释贡献逻辑与方法价值
+推荐提示词（可直接复用）：
+
+```text
+你是一名科研助手。请仔细阅读以下论文，并对其进行系统、结构化的分析与解读。
+
+请按照以下结构输出：
+
+研究问题（Research Problem）
+- 论文试图解决什么问题？
+- 为什么这个问题重要？
+- 现有方法有哪些局限？
+
+核心思想（Core Idea）
+- 论文的核心直觉是什么？
+- 作者提出了什么关键思想使方法有效？
+
+方法（Method）
+详细解释论文的方法，包括：
+- 模型整体架构
+- 各个模块的作用
+
+实验设计（Experiments）
+总结实验设置，包括：
+- 使用的数据集
+- 对比方法（Baselines）
+- 评价指标
+- 实验结果
+
+并解释：
+- 为什么该方法效果更好？
+- 实验是否充分？
+
+主要贡献（Contributions）
+列出论文的主要贡献。
+
+优点（Strengths）
+分析该工作的优势，例如：
+- 方法创新性
+- 实验设计
+- 实际应用价值
+
+局限性（Limitations）
+指出可能存在的问题，例如：
+- 方法假设
+- 实验不足
+- 可扩展性问题
+
+对研究者的启示（Research Insights）
+- 该论文最值得学习的思想是什么？
+- 未来可以如何改进或扩展？
+
+11. 通俗解释
+用简单易懂的语言解释这篇论文，使研究生能够快速理解核心思想。
+
+请使用清晰的小标题和条理化结构进行中文输出。输出的内容不少于1000字。
+```
+
+输出约束：
+- 必须使用读者视角（“本文/该研究”），不要使用作者自述视角（“我们提出/我们设计”）。
+- 禁止逐句翻译论文原文；要做信息提炼、逻辑重组与批判性分析。
+- 优先引用方法与实验中的关键设计，不要只重复摘要内容。

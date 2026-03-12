@@ -42,33 +42,7 @@ except ImportError:  # pragma: no cover
 ARXIV_API = "http://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 ARXIV_NS = {"arxiv": "http://arxiv.org/schemas/atom"}
-
-
-FIELD_TO_CATEGORIES = {
-    "machine learning": ["cs.LG", "stat.ML"],
-    "llm": ["cs.CL", "cs.LG"],
-    "nlp": ["cs.CL"],
-    "computer vision": ["cs.CV"],
-    "reinforcement learning": ["cs.LG", "cs.AI"],
-    "robotics": ["cs.RO"],
-    "ai safety": ["cs.AI"],
-    "multimodal": ["cs.CV", "cs.CL", "cs.AI"],
-    "图像": ["cs.CV"],
-    "计算机视觉": ["cs.CV"],
-    "自然语言处理": ["cs.CL"],
-    "大模型": ["cs.CL", "cs.LG"],
-    "机器学习": ["cs.LG", "stat.ML"],
-    "强化学习": ["cs.LG", "cs.AI"],
-    "机器人": ["cs.RO"],
-    "推荐系统": ["cs.IR", "cs.LG"],
-    "数据库": ["cs.DB"],
-}
-
-
-DEFAULT_VENUES = [
-    "AAAI", "ACL", "COLING", "CVPR", "ECCV", "EMNLP", "ICCV", "ICLR", "ICML",
-    "IJCAI", "KDD", "NAACL", "NeurIPS", "SIGIR", "SIGMOD", "VLDB", "WWW",
-]
+ARXIV_CODE_PATTERN = re.compile(r"\b[a-z]{2,}(?:\-[a-z]{2,})?\.[A-Za-z]{2,}\b")
 
 
 @dataclass
@@ -114,6 +88,31 @@ def save_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def maybe_reset_state_weekly(state: dict[str, Any], now_utc: datetime, interval_days: int = 7) -> bool:
+    last_reset = parse_iso_datetime(state.get("last_state_reset_at"))
+    if last_reset is not None and now_utc - last_reset < timedelta(days=interval_days):
+        return False
+    state["sent_versions_by_sub"] = {}
+    # Legacy keys are deprecated and removed during reset.
+    state.pop("sent_ids", None)
+    state.pop("sent_versions", None)
+    state.pop("sent_ids_by_sub", None)
+    state["last_state_reset_at"] = now_utc.isoformat()
+    return True
+
+
 def clamp_limit(v: Any, min_v: int = 5, max_v: int = 20, fallback: int = 10) -> int:
     try:
         iv = int(v)
@@ -127,33 +126,25 @@ def parse_arxiv_datetime(value: str) -> datetime:
 
 
 def normalize_field_to_categories(field_name: str) -> list[str]:
-    lowered = field_name.strip().lower()
-    if lowered in FIELD_TO_CATEGORIES:
-        return FIELD_TO_CATEGORIES[lowered]
-    # Heuristics for sub-fields that are not exact dictionary keys.
-    if "数据库" in field_name or "database" in lowered:
-        return ["cs.DB"]
-    if "优化器" in field_name or "optimizer" in lowered:
-        return ["cs.DB"]
-    if "推荐" in field_name or "recsys" in lowered or "recommend" in lowered:
-        return ["cs.IR", "cs.LG"]
-    if "查询" in field_name or "query" in lowered:
-        return ["cs.DB"]
-    categories = re.findall(r"\b[a-z]{2,}\.[A-Z]{2}\b", field_name)
-    return categories or ["cs.AI"]
+    categories = [m.group(0) for m in ARXIV_CODE_PATTERN.finditer(field_name.lower())]
+    normalized: list[str] = []
+    for code in categories:
+        if "." not in code:
+            continue
+        prefix, suffix = code.split(".", 1)
+        normalized.append(f"{prefix.lower()}.{suffix.upper() if len(suffix) <= 3 else suffix.lower()}")
+    return list(dict.fromkeys(normalized))
 
 
 def infer_terms_from_field(field_name: str) -> list[str]:
-    lowered = field_name.strip().lower()
+    text = field_name.strip().lower()
+    if not text:
+        return []
+    words = re.findall(r"[a-z][a-z0-9\-]{2,}", text)
     terms: list[str] = []
-    if "数据库" in field_name or "database" in lowered or "db" in lowered:
-        terms.extend(["database", "query"])
-    if "优化器" in field_name or "optimizer" in lowered:
-        terms.extend(["optimizer", "query optimizer", "cost model", "execution plan", "join order"])
-    if "查询" in field_name or "query" in lowered:
-        terms.extend(["query", "query optimization", "cardinality estimation"])
-    if "推荐" in field_name or "recsys" in lowered or "recommend" in lowered:
-        terms.extend(["recommendation", "recommender", "ranking"])
+    terms.extend(words)
+    for i in range(len(words) - 1):
+        terms.append(f"{words[i]} {words[i + 1]}")
     return list(dict.fromkeys(terms))
 
 
@@ -185,14 +176,14 @@ def _expand_english_variants(keywords: list[str]) -> list[str]:
         if not k:
             continue
         out.append(k)
-        if "recommendation" in k:
-            out.extend(["recommender", "recommender system", "recommend"])
-        if "recommender" in k:
-            out.extend(["recommendation", "recommend", "recsys"])
-        if "optimizer" in k:
-            out.extend(["optimization", "query optimizer", "cost model", "execution plan"])
-        if "retrieval" in k:
-            out.extend(["rank", "ranking", "information retrieval"])
+        if " " in k:
+            parts = [p for p in k.split() if p]
+            out.extend(parts)
+        for token in re.findall(r"[a-z][a-z0-9\-]{2,}", k):
+            if token.endswith("s") and len(token) > 4:
+                out.append(token[:-1])
+            elif len(token) > 3:
+                out.append(f"{token}s")
     return list(dict.fromkeys(out))
 
 
@@ -455,33 +446,16 @@ def should_keep_for_specific_field(
     field_name: str,
     keywords: list[str],
     categories: list[str],
-    has_exact_mapping: bool,
 ) -> bool:
     text = f"{paper.title_en} {paper.abstract_en}".lower()
     cat_hit = bool(set(categories).intersection(set(paper.categories)))
     phrase_hits, strong_hits = _keyword_signals(text, keywords)
-    field_l = field_name.lower()
-
-    # For fine-grained DB optimizer fields, require both DB and optimizer semantics.
-    if ("数据库" in field_name or "database" in field_l or "db" in field_l) and (
-        "优化器" in field_name or "optimizer" in field_l
-    ):
-        db_terms = ["database", "sql", "relational", "query", "join", "index", "cardinality"]
-        opt_terms = ["optimizer", "optimization", "cost model", "execution plan", "query plan"]
-        has_db = any(t in text for t in db_terms)
-        has_opt = any(t in text for t in opt_terms)
-        return has_db and has_opt and (cat_hit or phrase_hits >= 1 or strong_hits >= 2)
-
-    # Exact mapped broad fields still require basic lexical support.
-    if has_exact_mapping:
-        return cat_hit and (phrase_hits >= 1 or strong_hits >= 1)
-
-    # If category does not match, demand strong textual evidence.
-    if not cat_hit:
-        return phrase_hits >= 2 or strong_hits >= 3
-
     fuzzy_hits = _fuzzy_term_score(text, [field_name] + keywords)
-    return phrase_hits >= 1 or strong_hits >= 1 or fuzzy_hits >= 1.5
+    if not categories:
+        return phrase_hits >= 1 or strong_hits >= 1 or fuzzy_hits >= 1.2
+    if not cat_hit:
+        return phrase_hits >= 2 or strong_hits >= 2 or fuzzy_hits >= 2.0
+    return phrase_hits >= 1 or strong_hits >= 1 or fuzzy_hits >= 1.2
 
 
 _EMBED_MODEL_CACHE: dict[str, Any] = {}
@@ -535,6 +509,7 @@ def embedding_filter_papers(
     keywords: list[str],
     venues: list[str],
     cfg: dict[str, Any],
+    seed_texts: list[str] | None = None,
 ) -> list[Paper]:
     if not papers:
         return papers
@@ -557,16 +532,42 @@ def embedding_filter_papers(
         ]
     )
     paper_texts = [f"{p.title_en}\n\n{p.abstract_en}" for p in papers]
+    seed_docs = [str(x).strip() for x in (seed_texts or []) if str(x).strip()]
+    seed_max_docs = int(cfg.get("seed_max_docs", 20))
+    if seed_max_docs > 0 and len(seed_docs) > seed_max_docs:
+        seed_docs = seed_docs[:seed_max_docs]
+    query_docs = [profile_text] + seed_docs
 
     try:
-        field_emb = model.encode(profile_text, normalize_embeddings=False)
+        query_embs = model.encode(query_docs, normalize_embeddings=False)
         paper_embs = model.encode(paper_texts, normalize_embeddings=False)
     except Exception:
         return papers
 
+    if query_embs is None or len(query_embs) == 0:
+        return papers
+    query_vecs = [list(v) for v in query_embs]
+    dim = len(query_vecs[0]) if query_vecs and query_vecs[0] else 0
+    if dim <= 0:
+        return papers
+    profile_weight = float(cfg.get("profile_weight", 1.0))
+    seed_weight = float(cfg.get("seed_weight", 0.7))
+    field_emb = [0.0] * dim
+    total_weight = 0.0
+    for i, vec in enumerate(query_vecs):
+        if len(vec) != dim:
+            continue
+        w = profile_weight if i == 0 else seed_weight
+        for j in range(dim):
+            field_emb[j] += vec[j] * w
+        total_weight += w
+    if total_weight <= 0:
+        return papers
+    field_emb = [x / total_weight for x in field_emb]
+
     kept: list[Paper] = []
     for p, emb in zip(papers, paper_embs):
-        sim = _cosine(list(field_emb), list(emb))
+        sim = _cosine(field_emb, list(emb))
         p.embedding_score = sim
         if sim >= threshold:
             kept.append(p)
@@ -644,13 +645,19 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
             return None
 
 
+def _openai_translate_model() -> str | None:
+    model = os.getenv("OPENAI_TRANSLATE_MODEL", "").strip()
+    return model or None
+
+
 def _openai_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None:
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    model = _openai_translate_model()
+    if not api_key or not model:
         return None
 
     body = {
-        "model": os.getenv("OPENAI_TRANSLATE_MODEL", "gpt-4.1-mini"),
+        "model": model,
         "input": [
             {
                 "role": "system",
@@ -712,14 +719,15 @@ def _argos_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None:
 
 def _openai_translate_text(text_en: str) -> str | None:
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    model = _openai_translate_model()
+    if not api_key or not model:
         return None
     raw = (text_en or "").strip()
     if not raw:
         return None
 
     body = {
-        "model": os.getenv("OPENAI_TRANSLATE_MODEL", "gpt-4.1-mini"),
+        "model": model,
         "input": [
             {
                 "role": "system",
@@ -774,10 +782,10 @@ def _argos_translate_text(text_en: str) -> str | None:
 
 
 def select_translate_provider() -> str:
-    provider = os.getenv("TRANSLATE_PROVIDER", "auto").strip().lower()
-    if provider in {"openai", "argos", "none"}:
+    provider = os.getenv("TRANSLATE_PROVIDER", "argos").strip().lower()
+    if provider in {"openai", "argos", "none", "auto"}:
         return provider
-    return "auto"
+    return "argos"
 
 
 def translate_paper(paper: Paper) -> str:
@@ -785,15 +793,15 @@ def translate_paper(paper: Paper) -> str:
 
     translated: tuple[str, str] | None = None
     used = "none"
-    if provider in ("openai", "auto"):
-        translated = _openai_translate(paper.title_en, paper.abstract_en)
-        if translated:
-            used = "openai"
-
-    if not translated and provider in ("argos", "auto"):
+    if provider in ("argos", "auto"):
         translated = _argos_translate(paper.title_en, paper.abstract_en)
         if translated:
             used = "argos"
+
+    if not translated and provider in ("openai", "auto"):
+        translated = _openai_translate(paper.title_en, paper.abstract_en)
+        if translated:
+            used = "openai"
 
     if translated:
         paper.title_zh, paper.abstract_zh = translated
@@ -820,8 +828,6 @@ def build_highlight_tags(paper: Paper, highlight: dict[str, Any]) -> list[str]:
             tags.append(f"AUTHOR:{name}")
 
     venues = [str(x).strip() for x in highlight.get("venues", []) if str(x).strip()]
-    if not venues:
-        venues = DEFAULT_VENUES
     for v in venues:
         if re.search(rf"\b{re.escape(v)}\b", f"{paper.title_en} {paper.abstract_en}", flags=re.IGNORECASE):
             tags.append(f"VENUE:{v}")
@@ -1394,10 +1400,10 @@ def _translate_text_to_zh(text_en: str) -> str | None:
 
     provider = select_translate_provider()
     translated: str | None = None
-    if provider in ("openai", "auto"):
-        translated = _openai_translate_text(raw)
-    if not translated and provider in ("argos", "auto"):
+    if provider in ("argos", "auto"):
         translated = _argos_translate_text(raw)
+    if not translated and provider in ("openai", "auto"):
+        translated = _openai_translate_text(raw)
 
     if translated:
         _INSIGHT_ZH_CACHE[raw] = translated
@@ -1711,27 +1717,14 @@ def run_subscription(
                 field_profile_map.setdefault(field_cn, item)
 
     sub_key = subscription_key(sub)
-    history_scope = str(sub.get("history_scope", "subscription")).strip().lower()
-
-    sent_versions_global = state.get("sent_versions", {})
-    if not isinstance(sent_versions_global, dict):
-        sent_versions_global = {}
+    # Dedup history is now subscription-scoped only.
     sent_versions_by_sub = state.get("sent_versions_by_sub", {})
     if not isinstance(sent_versions_by_sub, dict):
         sent_versions_by_sub = {}
-    sent_ids_by_sub = state.get("sent_ids_by_sub", {})
-    if not isinstance(sent_ids_by_sub, dict):
-        sent_ids_by_sub = {}
-
-    if history_scope == "global":
-        sent_versions_active = sent_versions_global
-        legacy_sent_ids = set(state.get("sent_ids", []))
-    else:
-        active = sent_versions_by_sub.get(sub_key, {})
-        if not isinstance(active, dict):
-            active = {}
-        sent_versions_active = active
-        legacy_sent_ids = set(sent_ids_by_sub.get(sub_key, []))
+    active = sent_versions_by_sub.get(sub_key, {})
+    if not isinstance(active, dict):
+        active = {}
+    sent_versions_active = active
 
     def collect(window_hours: int, relax_keywords: bool) -> tuple[list[Paper], dict[str, list[Paper]], int]:
         all_selected: list[Paper] = []
@@ -1746,18 +1739,25 @@ def run_subscription(
             primary_cats = fs.primary_categories or cats_all
             # Use primary categories as the only retrieval/constraint categories.
             cats = list(primary_cats) if primary_cats else list(cats_all)
-            lowered_name = fs.name.strip().lower()
-            has_exact_mapping = lowered_name in FIELD_TO_CATEGORIES
             inferred_terms = infer_terms_from_field(fs.name)
             profile = field_profile_map.get(fs.name, {})
             profile_keywords = [str(x).strip() for x in profile.get("keywords", []) if str(x).strip()]
+            profile_seed_keywords = [str(x).strip() for x in profile.get("seed_keywords", []) if str(x).strip()]
             profile_venues = [str(x).strip() for x in profile.get("venues", []) if str(x).strip()]
+            seed_papers = profile.get("seed_papers", []) if isinstance(profile.get("seed_papers"), list) else []
+            seed_texts = [
+                f"{str(p.get('title_en', '')).strip()}\n\n{str(p.get('abstract_en', '')).strip()}"
+                for p in seed_papers
+                if isinstance(p, dict)
+            ]
             canonical_en = str(profile.get("canonical_en", fs.name)).strip() or fs.name
             if relax_keywords:
-                keywords: list[str] = [fs.name] + inferred_terms + profile_keywords
+                keywords: list[str] = [fs.name] + inferred_terms + profile_seed_keywords + profile_keywords
             else:
                 keywords = list(
-                    dict.fromkeys(global_keywords + fs.keywords + profile_keywords + [fs.name] + inferred_terms)
+                    dict.fromkeys(
+                        global_keywords + fs.keywords + profile_seed_keywords + profile_keywords + [fs.name] + inferred_terms
+                    )
                 )
             excludes = list(dict.fromkeys(global_excludes + fs.exclude_keywords))
 
@@ -1789,18 +1789,16 @@ def run_subscription(
                 keywords=keywords,
                 venues=profile_venues,
                 cfg=sub.get("embedding_filter", {}),
+                seed_texts=seed_texts,
             )
 
             scored: list[Paper] = []
             for p in candidates:
                 if not should_keep_for_specific_field(
-                    p, fs.name, keywords, cats, has_exact_mapping=has_exact_mapping
+                    p, fs.name, keywords, cats
                 ):
                     continue
                 prev_v = None if ignore_history else sent_versions_active.get(p.arxiv_id)
-                if (not ignore_history) and prev_v is None and p.arxiv_id in legacy_sent_ids:
-                    prev_v = "v1"
-
                 if prev_v is None:
                     p.status = "NEW"
                 elif prev_v != p.version:
@@ -1889,14 +1887,8 @@ def run_subscription(
         if not ignore_history:
             for p in deduped:
                 sent_versions_active[p.arxiv_id] = p.version
-            if history_scope == "global":
-                state["sent_versions"] = sent_versions_active
-                state["sent_ids"] = sorted(sent_versions_active.keys())[-5000:]
-            else:
-                sent_versions_by_sub[sub_key] = sent_versions_active
-                state["sent_versions_by_sub"] = sent_versions_by_sub
-                sent_ids_by_sub[sub_key] = sorted(sent_versions_active.keys())[-5000:]
-                state["sent_ids_by_sub"] = sent_ids_by_sub
+            sent_versions_by_sub[sub_key] = sent_versions_active
+            state["sent_versions_by_sub"] = sent_versions_by_sub
         state["last_run_at"] = now_utc.isoformat()
 
     return {
@@ -1942,7 +1934,15 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_json(Path(args.config), default={"subscriptions": []})
-    state = load_json(Path(args.state), default={"sent_ids": [], "sent_versions": {}, "last_run_at": None})
+    state = load_json(
+        Path(args.state),
+        default={
+            "sent_versions_by_sub": {},
+            "last_run_at": None,
+            "last_push_date_by_sub": {},
+            "last_state_reset_at": None,
+        },
+    )
 
     if bool(config.get("setup_required", False)):
         msg = config.get("setup_message") or (
@@ -1961,13 +1961,14 @@ def main() -> int:
         print("No subscriptions found. Please edit config/subscriptions.json.")
         return 1
 
+    now_utc = datetime.now(timezone.utc)
+    state_reset = maybe_reset_state_weekly(state, now_utc, interval_days=7)
+
     results = []
     has_real_run = False
     last_push_date_by_sub = state.get("last_push_date_by_sub", {})
     if not isinstance(last_push_date_by_sub, dict):
         last_push_date_by_sub = {}
-
-    now_utc = datetime.now(timezone.utc)
     for sub in subs:
         sub_key = subscription_key(sub)
         if args.only_due_now:
@@ -2006,7 +2007,7 @@ def main() -> int:
         except Exception as exc:
             print(f"[ERROR] Subscription failed ({sub.get('name', 'unknown')}): {exc}")
 
-    if not args.dry_run and has_real_run:
+    if not args.dry_run and (has_real_run or state_reset):
         state["last_push_date_by_sub"] = last_push_date_by_sub
         save_json(Path(args.state), state)
 
