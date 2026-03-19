@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import threading
 import sys
 import time
 from dataclasses import dataclass, field
@@ -650,6 +651,18 @@ def _openai_translate_model() -> str | None:
     return model or None
 
 
+def _argos_translate_timeout_sec() -> float:
+    raw = os.getenv("ARGOS_TRANSLATE_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return 20.0
+    try:
+        v = float(raw)
+    except Exception:
+        return 20.0
+    # <=0 means no timeout guard.
+    return max(0.0, v)
+
+
 def _openai_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None:
     api_key = os.getenv("OPENAI_API_KEY")
     model = _openai_translate_model()
@@ -699,7 +712,7 @@ def _openai_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None
     return title_zh, abstract_zh
 
 
-def _argos_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None:
+def _argos_translate_impl(title_en: str, abstract_en: str) -> tuple[str, str] | None:
     try:
         from argostranslate import translate as argos_translate
     except Exception:
@@ -715,6 +728,25 @@ def _argos_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None:
         return tr.translate(title_en).strip(), tr.translate(abstract_en).strip()
     except Exception:
         return None
+
+
+def _argos_translate(title_en: str, abstract_en: str) -> tuple[str, str] | None:
+    timeout_sec = _argos_translate_timeout_sec()
+    if timeout_sec <= 0:
+        return _argos_translate_impl(title_en, abstract_en)
+
+    holder: dict[str, tuple[str, str] | None] = {"value": None}
+
+    def _worker() -> None:
+        holder["value"] = _argos_translate_impl(title_en, abstract_en)
+
+    # Daemon thread prevents a hung translation call from blocking process exit.
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+    if t.is_alive():
+        return None
+    return holder["value"]
 
 
 def _openai_translate_text(text_en: str) -> str | None:
