@@ -280,12 +280,27 @@ def migrate_state_config(state: Any) -> tuple[dict[str, Any], list[str]]:
     if "last_run_at" not in out:
         out["last_run_at"] = None
         changes.append("state: defaulted last_run_at=null")
+    elif out.get("last_run_at") is not None and not isinstance(out.get("last_run_at"), str):
+        out["last_run_at"] = str(out.get("last_run_at"))
+        changes.append("state: normalized last_run_at to string")
     if not isinstance(out.get("last_push_date_by_sub"), dict):
         out["last_push_date_by_sub"] = {}
         changes.append("state: defaulted last_push_date_by_sub={}")
+    legacy_last_push_date = out.pop("last_push_date", None)
+    if isinstance(legacy_last_push_date, str) and legacy_last_push_date.strip():
+        date_text = legacy_last_push_date.strip()
+        # Legacy singleton date is applied to every known subscription key in state.
+        if not out["last_push_date_by_sub"]:
+            for sub_key in out.get("sent_versions_by_sub", {}).keys():
+                out["last_push_date_by_sub"][sub_key] = date_text
+            if out["last_push_date_by_sub"]:
+                changes.append("state: migrated legacy last_push_date -> last_push_date_by_sub")
     if "last_state_reset_at" not in out:
         out["last_state_reset_at"] = None
         changes.append("state: defaulted last_state_reset_at=null")
+    elif out.get("last_state_reset_at") is not None and not isinstance(out.get("last_state_reset_at"), str):
+        out["last_state_reset_at"] = str(out.get("last_state_reset_at"))
+        changes.append("state: normalized last_state_reset_at to string")
 
     schema_version = out.get("schema_version")
     if schema_version != STATE_SCHEMA_VERSION:
@@ -354,8 +369,17 @@ def validate_state_config(state: dict[str, Any]) -> tuple[list[str], list[str]]:
     if not isinstance(state, dict):
         errors.append("state root must be an object")
         return errors, warnings
-    if not isinstance(state.get("sent_versions_by_sub"), dict):
+    by_sub = state.get("sent_versions_by_sub")
+    if not isinstance(by_sub, dict):
         errors.append("state.sent_versions_by_sub must be an object")
+    else:
+        for sub_key, mapping in by_sub.items():
+            if not isinstance(mapping, dict):
+                errors.append(f"state.sent_versions_by_sub[{sub_key}] must be an object")
+                continue
+            for pid, version in mapping.items():
+                if not str(pid).strip() or not str(version).strip():
+                    errors.append(f"state.sent_versions_by_sub[{sub_key}] contains empty id/version")
     if not isinstance(state.get("last_push_date_by_sub", {}), dict):
         errors.append("state.last_push_date_by_sub must be an object")
     return errors, warnings

@@ -84,6 +84,7 @@ class Paper:
     abstract_zh: str = ""
     status: str = "NEW"
     highlight_tags: list[str] = field(default_factory=list)
+    why_recommended: str = ""
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -448,6 +449,39 @@ def score_paper(
     fuzzy_score = _fuzzy_term_score(text, [field_name] + keywords) * 8.0
     embedding_bonus = max(0.0, p.embedding_score) * 35.0
     return recency + field_score + keyword_score + fuzzy_score + embedding_bonus
+
+
+def build_why_recommended(
+    paper: Paper,
+    categories: list[str],
+    keywords: list[str],
+    field_name: str,
+    now_utc: datetime,
+) -> str:
+    text = f"{paper.title_en} {paper.abstract_en}".lower()
+    matched_categories = [c for c in categories if c in set(paper.categories)]
+    matched_keywords = [kw for kw in keywords if kw.lower() in text]
+    phrase_hits, strong_hits = _keyword_signals(text, keywords)
+    fuzzy = _fuzzy_term_score(text, [field_name] + keywords)
+    age_hours = max(0.0, (now_utc - paper.updated).total_seconds() / 3600)
+
+    parts: list[str] = []
+    if matched_categories:
+        parts.append(f"category={','.join(matched_categories[:3])}")
+    if matched_keywords:
+        parts.append(f"keywords={','.join(matched_keywords[:4])}")
+    if phrase_hits or strong_hits:
+        parts.append(f"kw_signal=phrase:{phrase_hits}/strong:{strong_hits}")
+    if fuzzy > 0:
+        parts.append(f"fuzzy={fuzzy:.2f}")
+    if paper.embedding_score > 0:
+        parts.append(f"embedding={paper.embedding_score:.2f}")
+    if paper.rerank_score > 0:
+        parts.append(f"rerank={paper.rerank_score:.2f}")
+    parts.append(f"freshness={age_hours:.1f}h")
+    parts.append(f"status={paper.status}")
+    parts.append(f"score={paper.score:.2f}")
+    return "; ".join(parts)
 
 
 def should_keep_for_specific_field(
@@ -1868,6 +1902,15 @@ def run_subscription(
                     p.rerank_score = rr
                     p.score += rr * 45.0
 
+            for p in scored:
+                p.why_recommended = build_why_recommended(
+                    paper=p,
+                    categories=cats,
+                    keywords=keywords,
+                    field_name=fs.name,
+                    now_utc=now_utc,
+                )
+
             total_candidates += len(scored)
             scored.sort(key=lambda x: x.score, reverse=True)
             selected_field = pick_best_by_id(scored)[: fs.limit]
@@ -1939,6 +1982,22 @@ def run_subscription(
         "translation_stats": translation_stats,
         "used_window_hours": used_window_hours,
         "used_fallback": used_fallback,
+        "selected_papers": [
+            {
+                "arxiv_id": p.arxiv_id,
+                "version": p.version,
+                "source_field": p.source_field,
+                "title_en": p.title_en,
+                "title_zh": p.title_zh,
+                "status": p.status,
+                "score": round(p.score, 4),
+                "embedding_score": round(p.embedding_score, 4),
+                "rerank_score": round(p.rerank_score, 4),
+                "why_recommended": p.why_recommended,
+                "url": p.url,
+            }
+            for p in deduped
+        ],
         "markdown": markdown,
     }
 
