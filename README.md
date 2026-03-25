@@ -241,6 +241,74 @@ python scripts/instant_digest.py --fields "推荐系统" --agent-categories-only
 - 当前仅使用 `data/state.json -> sent_versions_by_sub` 做去重。
 - state 每 7 天自动清空一次去重记录（不影响当天是否已推送判断）。
 
+## 配置校验与自动迁移（新增）
+
+`run_digest.py` 启动时会自动执行：
+- `subscriptions.json` 迁移（旧 `fields/daily_count` -> 新 `field_settings`）
+- `state.json` 迁移（旧去重字段 -> `sent_versions_by_sub`）
+- schema 版本补齐（`schema_version`）
+- 迁移前自动备份（`*.bak.<timestamp>`）
+
+可手动健康检查：
+
+```bash
+python scripts/doctor.py
+```
+
+说明：
+- 若检测到 `setup_required=true`，会提示先初始化订阅（这是预期行为）。
+- 若配置存在可迁移项，doctor 会提示“可自动迁移”，实际写回在 `run_digest.py` 执行时完成。
+
+## 为什么推荐这篇（新增）
+
+日报中每篇论文新增：
+- `Why Recommended`：展示命中解释（分类命中、关键词命中、embedding/rerank、新鲜度、状态）
+- `Feedback ID`：稳定反馈标识，用于点赞/点踩闭环
+
+同时，`run_digest.py` 的 JSON 结果里每篇会包含：
+- `why_recommended`
+- `feedback_id`
+- `rank`
+
+便于后续自动化分析和 Agent 协作。
+
+## 点赞/点踩交互（新增）
+
+`run_digest.py` 默认会写出反馈映射文件：
+- `data/feedback/last_selection.json`
+
+用户可使用 `feedback_cli.py` 记录反馈：
+
+```bash
+python scripts/feedback_cli.py --feedback "+ 1,3; - 2#太泛"
+```
+
+或结构化写法：
+
+```bash
+python scripts/feedback_cli.py --feedback "like:1,3; dislike:2#太偏NLP"
+```
+
+记录会追加到：
+- `data/feedback/feedback.jsonl`
+
+## 反馈闭环（Agent 配合，新增）
+
+建议流程：
+1. 先跑日报：`python scripts/run_digest.py --emit-markdown`
+2. 引导用户按序号点赞/点踩：`+ 1,3; - 2#原因`
+3. 记录反馈：`python scripts/feedback_cli.py --feedback "..."`
+4. 聚合反馈建议：`python scripts/apply_feedback.py`
+5. 下次生成订阅时自动吸收反馈：`prepare_fields.py` 默认读取 `config/feedback_adjustments.json`
+
+反馈生效方式：
+- 正反馈词 -> 并入关键词
+- 负反馈词 -> 并入 `exclude_keywords`
+- 由 Agent 结合上下文决定是否进一步人工修订 `agent_field_profiles.json`
+
+可参考样例：
+- `config/feedback_adjustments.example.json`
+
 ## 定时推送（推荐精确 cron / 任务计划程序）
 
 对于“安装到本地的 skill”，默认应使用本机调度器，而不是依赖把仓库推到 GitHub 才能运行。

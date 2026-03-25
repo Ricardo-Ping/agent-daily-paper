@@ -972,6 +972,44 @@ def _lookup_agent_profile(field_name: str, profiles: dict[str, Any]) -> dict[str
     return None
 
 
+def _load_feedback_adjustments(path: str) -> dict[str, Any]:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    fields = data.get("fields", {}) if isinstance(data, dict) else {}
+    if not isinstance(fields, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for k, v in fields.items():
+        if not isinstance(v, dict):
+            continue
+        nk = _normalize_profile_key(str(k))
+        if nk:
+            normalized[nk] = v
+    return normalized
+
+
+def _lookup_feedback_adjustment(
+    field_name: str,
+    canonical_en: str,
+    adjustments: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not adjustments:
+        return None
+    keys = [
+        _normalize_profile_key(field_name),
+        _normalize_profile_key(canonical_en),
+    ]
+    for k in keys:
+        if k and isinstance(adjustments.get(k), dict):
+            return adjustments.get(k)
+    return None
+
+
 def _openai_profile(field_name: str) -> dict[str, Any] | None:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -1059,6 +1097,7 @@ def build_field_setting(
     seed_docs_dir: str = "output/seed_corpus/docs",
     seed_embeddings_dir: str = "output/seed_corpus/embeddings",
     seed_force_refresh: bool = False,
+    feedback_adjustments: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     profile = agent_profile
     source = "agent" if profile else "heuristic"
@@ -1081,6 +1120,17 @@ def build_field_setting(
         field_context=field_context,
         keywords=keywords,
     )
+    feedback = _lookup_feedback_adjustment(field_name, canonical_en, feedback_adjustments or {})
+    feedback_positive = [
+        str(x).strip() for x in (feedback or {}).get("positive_keywords", [])
+        if _is_english_term(str(x).strip())
+    ]
+    feedback_negative = [
+        str(x).strip() for x in (feedback or {}).get("negative_keywords", [])
+        if _is_english_term(str(x).strip())
+    ]
+    if feedback_positive:
+        keywords = list(dict.fromkeys(feedback_positive + keywords))
     canonical_terms = [w for w in re.findall(r"[a-z][a-z0-9\-]{1,40}", canonical_en.lower())]
     keywords = list(dict.fromkeys(keywords + canonical_terms))
     if not keywords:
@@ -1197,7 +1247,7 @@ def build_field_setting(
         "categories": categories,
         "primary_categories": primary_categories,
         "keywords": keywords_final[:16],
-        "exclude_keywords": [],
+        "exclude_keywords": feedback_negative[:16],
     }
     highlight = {
         "title_keywords": title_keywords[:10],
@@ -1216,6 +1266,9 @@ def build_field_setting(
         "venues": venues[:8],
         "seed_query_terms": seed_query_terms,
         "seed_paper_count": len(seed_papers),
+        "feedback_applied": bool(feedback),
+        "feedback_positive_keywords": feedback_positive[:10],
+        "feedback_negative_keywords": feedback_negative[:10],
         "seed_prior_categories": seed_prior_categories,
         "seed_category_bias": seed_category_bias,
         "seed_keywords": seed_keywords,
@@ -1318,6 +1371,11 @@ def main() -> int:
         help="Force refresh seed corpus even if fingerprint cache matches",
     )
     parser.add_argument(
+        "--feedback-adjustments-json",
+        default="config/feedback_adjustments.json",
+        help="Feedback adjustment JSON path",
+    )
+    parser.add_argument(
         "--use-openai-profile",
         action="store_true",
         help="Opt-in: use OpenAI Responses API for profile generation when agent profile is missing",
@@ -1339,6 +1397,7 @@ def main() -> int:
             # When agent profiles are available, they are used as primary source.
             use_openai = False
     taxonomy_rows, known_codes = _load_taxonomy(args.taxonomy_json)
+    feedback_adjustments = _load_feedback_adjustments(args.feedback_adjustments_json)
 
     field_settings = []
     merged_title_keywords: list[str] = []
@@ -1368,6 +1427,7 @@ def main() -> int:
             seed_docs_dir=args.seed_docs_dir,
             seed_embeddings_dir=args.seed_embeddings_dir,
             seed_force_refresh=args.seed_force_refresh,
+            feedback_adjustments=feedback_adjustments,
         )
         field_settings.append(setting)
         traces.append(trace)
@@ -1434,6 +1494,7 @@ def main() -> int:
         "meta": {
             "openai_enabled": use_openai,
             "agent_profiles_enabled": bool(agent_profiles),
+            "feedback_adjustments_enabled": bool(feedback_adjustments),
             "taxonomy_loaded": bool(taxonomy_rows),
             "taxonomy_entry_count": len(taxonomy_rows),
             "global_venue_hints": global_venue_hints,
