@@ -20,6 +20,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
 import json
+import hashlib
 import math
 import os
 import re
@@ -85,6 +86,7 @@ class Paper:
     status: str = "NEW"
     highlight_tags: list[str] = field(default_factory=list)
     why_recommended: str = ""
+    feedback_id: str = ""
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -1682,6 +1684,8 @@ def render_markdown(
             f"- Updated: {updated_local} ({tz_name})",
             f"- Categories: {', '.join(p.categories)}",
             f"- Score: {p.score:.2f}",
+            f"- Why Recommended: {p.why_recommended or '(n/a)'}",
+            f"- Feedback ID: {p.feedback_id or '(pending)'}",
             f"- arXiv: {p.url}",
             "",
             "### English Abstract",
@@ -1721,6 +1725,12 @@ def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*]+', '-', name)
     cleaned = re.sub(r"\s+", "_", cleaned).strip(" ._-")
     return cleaned or "digest"
+
+
+def build_feedback_id(sub_key: str, paper: Paper) -> str:
+    raw = f"{sub_key}|{paper.source_field}|{paper.arxiv_id}|{paper.version}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"fb_{digest}"
 
 
 def subscription_key(sub: dict[str, Any]) -> str:
@@ -1944,6 +1954,9 @@ def run_subscription(
         used_window_hours = fallback_time_window_hours
         used_fallback = True
 
+    for p in deduped:
+        p.feedback_id = build_feedback_id(sub_key, p)
+
     translation_stats = {"openai": 0, "argos": 0, "none": 0}
     for p in deduped:
         used = translate_paper(p)
@@ -1984,6 +1997,7 @@ def run_subscription(
         "used_fallback": used_fallback,
         "selected_papers": [
             {
+                "rank": i + 1,
                 "arxiv_id": p.arxiv_id,
                 "version": p.version,
                 "source_field": p.source_field,
@@ -1994,9 +2008,10 @@ def run_subscription(
                 "embedding_score": round(p.embedding_score, 4),
                 "rerank_score": round(p.rerank_score, 4),
                 "why_recommended": p.why_recommended,
+                "feedback_id": p.feedback_id,
                 "url": p.url,
             }
-            for p in deduped
+            for i, p in enumerate(deduped)
         ],
         "markdown": markdown,
     }
@@ -2016,6 +2031,11 @@ def main() -> int:
     parser.add_argument("--config", default="config/subscriptions.json")
     parser.add_argument("--state", default="data/state.json")
     parser.add_argument("--output-dir", default="output/daily")
+    parser.add_argument(
+        "--feedback-selection-out",
+        default="data/feedback/last_selection.json",
+        help="Write latest ranked paper map for feedback collection",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ignore-history", action="store_true", help="Ignore sent history for this run")
     parser.add_argument("--emit-markdown", action="store_true", help="Include full markdown in stdout JSON")
@@ -2144,6 +2164,21 @@ def main() -> int:
     if not args.dry_run and (has_real_run or state_reset):
         state["last_push_date_by_sub"] = last_push_date_by_sub
         save_json(Path(args.state), state)
+
+    if not args.dry_run and args.feedback_selection_out:
+        feedback_payload = {
+            "generated_at": now_utc.isoformat(),
+            "subscriptions": [
+                {
+                    "subscription": str(r.get("subscription", "")).strip(),
+                    "papers": r.get("selected_papers", []),
+                }
+                for r in results
+                if isinstance(r, dict) and isinstance(r.get("selected_papers"), list)
+            ],
+        }
+        out_path = Path(args.feedback_selection_out)
+        save_json(out_path, feedback_payload)
 
     if not args.emit_markdown:
         for r in results:
