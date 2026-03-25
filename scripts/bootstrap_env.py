@@ -132,6 +132,7 @@ def ensure_state_file(state_path: Path) -> None:
     state_path.write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "sent_versions_by_sub": {},
                 "last_run_at": None,
                 "last_push_date_by_sub": {},
@@ -151,6 +152,7 @@ def ensure_subscriptions_placeholder(path: Path) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     placeholder = {
+        "schema_version": 2,
         "setup_required": True,
         "setup_message": "首次使用请先配置：研究领域（可多项）、每领域数量(5-20)、每日推送时间(HH:MM)、时区。",
         "subscriptions": [],

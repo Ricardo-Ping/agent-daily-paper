@@ -33,6 +33,14 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
+from config_migration import (
+    backup_json_file,
+    describe_changes,
+    migrate_state_config,
+    migrate_subscriptions_config,
+    validate_state_config,
+    validate_subscriptions_config,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -1965,16 +1973,51 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    config = load_json(Path(args.config), default={"subscriptions": []})
+    config_path = Path(args.config)
+    state_path = Path(args.state)
+
+    config = load_json(config_path, default={"schema_version": 2, "subscriptions": []})
     state = load_json(
-        Path(args.state),
+        state_path,
         default={
+            "schema_version": 2,
             "sent_versions_by_sub": {},
             "last_run_at": None,
             "last_push_date_by_sub": {},
             "last_state_reset_at": None,
         },
     )
+
+    config, config_changes = migrate_subscriptions_config(config)
+    if config_changes:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            backup = backup_json_file(config_path)
+            print(f"[MIGRATE] Backed up config to: {backup}")
+        save_json(config_path, config)
+        msg = describe_changes("subscriptions config", config_changes)
+        if msg:
+            print(msg)
+
+    state, state_changes = migrate_state_config(state)
+    if state_changes:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        if state_path.exists():
+            backup = backup_json_file(state_path)
+            print(f"[MIGRATE] Backed up state to: {backup}")
+        save_json(state_path, state)
+        msg = describe_changes("state", state_changes)
+        if msg:
+            print(msg)
+
+    cfg_errors, cfg_warnings = validate_subscriptions_config(config)
+    st_errors, st_warnings = validate_state_config(state)
+    for w in cfg_warnings + st_warnings:
+        print(f"[WARN] {w}")
+    if cfg_errors or st_errors:
+        for e in cfg_errors + st_errors:
+            print(f"[ERROR] {e}")
+        return 1
 
     if bool(config.get("setup_required", False)):
         msg = config.get("setup_message") or (

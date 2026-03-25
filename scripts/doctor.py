@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -14,12 +13,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-
-try:
-    from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover
-    ZoneInfo = None  # type: ignore
-
+from config_migration import (
+    CONFIG_SCHEMA_VERSION,
+    STATE_SCHEMA_VERSION,
+    migrate_state_config,
+    migrate_subscriptions_config,
+    validate_state_config,
+    validate_subscriptions_config,
+)
 
 ARXIV_API = "http://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
@@ -49,64 +50,70 @@ def check_subscriptions(config_path: Path) -> list[CheckResult]:
     except Exception as exc:
         return [CheckResult("ERROR", "subscriptions.json", f"invalid JSON: {exc}")]
 
-    if isinstance(cfg, dict) and bool(cfg.get("setup_required", False)):
-        return [
+    migrated, changes = migrate_subscriptions_config(cfg)
+    if changes:
+        out.append(
+            CheckResult(
+                "WARN",
+                "subscriptions.json migration",
+                "detected auto-migration candidates; run run_digest.py once to persist updates",
+            )
+        )
+
+    schema_v = migrated.get("schema_version")
+    if schema_v == CONFIG_SCHEMA_VERSION:
+        out.append(CheckResult("OK", "subscriptions schema", f"schema_version={schema_v}"))
+    else:
+        out.append(CheckResult("WARN", "subscriptions schema", f"expected {CONFIG_SCHEMA_VERSION}, got {schema_v}"))
+
+    if isinstance(migrated, dict) and bool(migrated.get("setup_required", False)):
+        out.append(
             CheckResult(
                 "WARN",
                 "subscriptions.json",
                 "setup_required=true: 尚未完成首次配置（这是预期状态）。请先填写领域、数量、推送时间、时区。",
             )
-        ]
-
-    subs = cfg.get("subscriptions", []) if isinstance(cfg, dict) else []
-    if not isinstance(subs, list) or not subs:
-        out.append(CheckResult("ERROR", "subscriptions.json", "subscriptions is empty or invalid"))
+        )
         return out
 
+    errors, warnings = validate_subscriptions_config(migrated)
+    subs = migrated.get("subscriptions", []) if isinstance(migrated, dict) else []
     out.append(CheckResult("OK", "subscriptions.json", f"subscriptions count: {len(subs)}"))
+    for item in warnings:
+        out.append(CheckResult("WARN", "subscriptions validation", item))
+    for item in errors:
+        out.append(CheckResult("ERROR", "subscriptions validation", item))
 
-    for i, sub in enumerate(subs, start=1):
-        sid = str(sub.get("id") or f"sub-{i}")
-        tz = str(sub.get("timezone", "Asia/Shanghai"))
-        pt = str(sub.get("push_time", ""))
-        fs = sub.get("field_settings", [])
+    return out
 
-        if not re.fullmatch(r"\d{1,2}:\d{2}", pt):
-            out.append(CheckResult("ERROR", f"{sid}.push_time", f"invalid HH:MM: {pt}"))
-        else:
-            hh, mm = [int(x) for x in pt.split(":")]
-            if hh > 23 or mm > 59:
-                out.append(CheckResult("ERROR", f"{sid}.push_time", f"out of range: {pt}"))
-            else:
-                out.append(CheckResult("OK", f"{sid}.push_time", pt))
 
-        if ZoneInfo is None:
-            out.append(CheckResult("WARN", f"{sid}.timezone", "zoneinfo unavailable in this Python"))
-        else:
-            try:
-                ZoneInfo(tz)
-                out.append(CheckResult("OK", f"{sid}.timezone", tz))
-            except Exception:
-                out.append(CheckResult("ERROR", f"{sid}.timezone", f"invalid timezone: {tz}"))
+def check_state_schema(path: Path) -> list[CheckResult]:
+    out: list[CheckResult] = []
+    try:
+        state = load_json(path)
+    except Exception as exc:
+        return [CheckResult("ERROR", "state.json", f"invalid JSON: {exc}")]
 
-        if not isinstance(fs, list) or not fs:
-            out.append(CheckResult("ERROR", f"{sid}.field_settings", "field_settings missing"))
-            continue
+    migrated, changes = migrate_state_config(state)
+    if changes:
+        out.append(
+            CheckResult(
+                "WARN",
+                "state.json migration",
+                "detected auto-migration candidates; run run_digest.py once to persist updates",
+            )
+        )
+    schema_v = migrated.get("schema_version")
+    if schema_v == STATE_SCHEMA_VERSION:
+        out.append(CheckResult("OK", "state schema", f"schema_version={schema_v}"))
+    else:
+        out.append(CheckResult("WARN", "state schema", f"expected {STATE_SCHEMA_VERSION}, got {schema_v}"))
 
-        for f in fs:
-            name = str(f.get("name", "")).strip()
-            limit = f.get("limit", 0)
-            if not name:
-                out.append(CheckResult("ERROR", f"{sid}.field.name", "empty field name"))
-            try:
-                il = int(limit)
-                if il < 5 or il > 20:
-                    out.append(CheckResult("WARN", f"{sid}.field.limit", f"recommended range 5-20, got {il}"))
-                else:
-                    out.append(CheckResult("OK", f"{sid}.field.limit", f"{name}: {il}"))
-            except Exception:
-                out.append(CheckResult("ERROR", f"{sid}.field.limit", f"invalid limit: {limit}"))
-
+    errors, warnings = validate_state_config(migrated)
+    for item in warnings:
+        out.append(CheckResult("WARN", "state validation", item))
+    for item in errors:
+        out.append(CheckResult("ERROR", "state validation", item))
     return out
 
 
@@ -241,6 +248,8 @@ def main() -> int:
     results.append(check_file_exists(state, "state"))
     if config.exists():
         results.extend(check_subscriptions(config))
+    if state.exists():
+        results.extend(check_state_schema(state))
     results.append(check_agent_profiles(agent_profiles))
     results.append(check_translate_runtime())
     results.extend(check_argos())

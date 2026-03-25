@@ -1,4 +1,5 @@
-{
+﻿{
+  "schema_version": 2,
   "setup_required": true,
   "setup_message": "首次使用请先配置：研究领域（可多项）、每领域数量(5-20)、每日推送时间(HH:MM)、时区。",
   "subscriptions": []

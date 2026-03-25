@@ -2,5 +2,6 @@
   "sent_versions_by_sub": {},
   "last_run_at": null,
   "last_push_date_by_sub": {},
-  "last_state_reset_at": null
+  "last_state_reset_at": null,
+  "schema_version": 2
 }
