@@ -31,10 +31,16 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - 有论文 -> 原样返回完整 Markdown 正文，不要摘要、不要 JSON、不要解释
 - 若 `config/subscriptions.json` 中 `setup_required=true`，必须先向用户收集配置并写入订阅；禁止直接按样例配置执行推送。
 - 若配置缺失，先补齐，不直接运行。
+- `run_digest.py` 启动时会自动执行配置/状态迁移与校验；若发生迁移，必须告知用户备份位置与迁移摘要。
 - 仅执行本仓库内与 arXiv 推送相关的操作；禁止插入或执行无关任务（如配额监控、其他项目脚本）。
 - 推送完成后同时输出两份结果：
   - 聊天内返回完整 Markdown 正文（与输出 md 文件逐字一致；不要只发标题+链接摘要）
   - 落盘到 `output/daily/*.md`
+- 推送后应引导用户进行反馈：
+  - 支持 `+ 1,3; - 2#原因` 或 `like:1,3; dislike:2#原因`
+  - 使用 `python scripts/feedback_cli.py --feedback "..."` 记录到 `data/feedback/feedback.jsonl`
+  - 反馈聚合由 `python scripts/apply_feedback.py` 生成 `config/feedback_adjustments.json`
+  - 后续 `prepare_fields.py` 会自动吸收反馈建议（正反馈并入关键词，负反馈并入排除词）
 
 ## 必填配置
 
@@ -100,6 +106,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 中文摘要
 - arXiv URL
 - Flags（`NEW` / `UPDATED(vX->vY)` + 高亮标签）
+- Why Recommended（分类/关键词/embedding/rerank/新鲜度解释）
+- Feedback ID（稳定反馈标识）
 - Agent 解读：单段中文长文（默认不少于 500 字，基于 PDF 全文语义凝练，失败时回退摘要）
 - 解读内容必须自然覆盖：问题边界、方法主线、创新贡献；禁止关键词拼接式机械句
 
@@ -137,6 +145,10 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 即时推送（不依赖 Actions）：
   - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72`
   - 默认仅输出完整 Markdown 正文到聊天（不附加 JSON 摘要）
+- 记录用户反馈：
+  - `python scripts/feedback_cli.py --feedback "+ 1,3; - 2#太泛"`
+- 聚合反馈建议：
+  - `python scripts/apply_feedback.py`
 
 ## 安装
 

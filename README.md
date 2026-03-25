@@ -424,9 +424,12 @@ python scripts/run_digest.py --config config/subscriptions.json --only-due-now -
 - `scripts/run_digest.py`：抓取、排序、翻译、归档
 - `scripts/prepare_fields.py`：领域输入转订阅配置
 - `scripts/instant_digest.py`：即时推送入口
+- `scripts/feedback_cli.py`：按序号记录点赞/点踩反馈
+- `scripts/apply_feedback.py`：聚合反馈并生成调整建议
 - `config/subscriptions.json`：长期订阅配置（生产）
 - `config/subscriptions.examples.json`：示例订阅集合（参考模板）
 - `config/agent_field_profiles.json`：Agent 字段画像输入（默认读取，建议按需维护）
+- `config/feedback_adjustments.json`：反馈聚合结果（`prepare_fields.py` 自动读取）
 - `config/agent_field_profiles.example.json`：字段画像示例模板
 - `output/daily/`：每日归档目录
 
