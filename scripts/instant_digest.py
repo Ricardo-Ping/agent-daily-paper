@@ -5,15 +5,41 @@ from __future__ import annotations
 
 import argparse
 import json
+import locale
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
+def _decode_output(raw: bytes) -> str:
+    if not raw:
+        return ""
+    candidates = [
+        os.getenv("PYTHONIOENCODING", "").strip(),
+        getattr(sys.stdout, "encoding", "") or "",
+        locale.getpreferredencoding(False) or "",
+        "utf-8",
+        "gb18030",
+        "cp936",
+    ]
+    seen: set[str] = set()
+    for enc in candidates:
+        key = enc.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            return raw.decode(enc)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def run_cmd(cmd: list[str], cwd: Path) -> str:
     proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=False)
-    stdout = proc.stdout.decode("utf-8", errors="replace")
-    stderr = proc.stderr.decode("utf-8", errors="replace")
+    stdout = _decode_output(proc.stdout)
+    stderr = _decode_output(proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(stderr.strip() or stdout.strip() or "command failed")
     return stdout
@@ -22,7 +48,7 @@ def run_cmd(cmd: list[str], cwd: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Instant arXiv digest for given fields")
     parser.add_argument("--fields", required=True, help="Comma-separated field names, e.g. 数据库优化器,推荐系统")
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--push-time", default="09:00")
     parser.add_argument("--timezone", default="Asia/Shanghai")
     parser.add_argument("--time-window-hours", type=int, default=24)

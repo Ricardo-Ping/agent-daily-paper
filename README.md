@@ -123,7 +123,7 @@ python scripts/doctor.py
 ### 一键执行
 
 ```bash
-python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72
+python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 10 --time-window-hours 72
 ```
 
 默认读取 `config/agent_field_profiles.json` 作为 Agent 字段画像输入（首次安装后应完成该文件配置）。
@@ -134,7 +134,7 @@ python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --li
 ### 分步执行
 
 ```bash
-python scripts/prepare_fields.py --fields "数据库优化器" --limit 20 --output config/subscriptions.instant.json
+python scripts/prepare_fields.py --fields "数据库优化器" --limit 10 --output config/subscriptions.instant.json
 python scripts/run_digest.py --config config/subscriptions.instant.json --emit-markdown
 ```
 
@@ -190,7 +190,8 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
 ## 相关性漏斗（推荐）
 
 推荐启用四层过滤：
-1. `query_strategy=category_keyword_union`（主分类 + 英文关键词并集召回）
+1. `query_strategy=category_first`（低请求压力默认）
+2. `query_strategy=category_keyword_union`（主分类 + 英文关键词并集召回，压力更高）
 2. `require_primary_category=true`（仅保留主分类命中）
 3. `embedding_filter`（本地向量相似度过滤）
 4. `agent_rerank`（本地语义重排，默认 `BAAI/bge-reranker-v2-m3`）
@@ -201,9 +202,12 @@ Copy-Item config/agent_field_profiles.example.json config/agent_field_profiles.j
 
 ```json
 {
-  "query_strategy": "category_keyword_union",
+  "query_strategy": "category_first",
   "require_primary_category": true,
   "category_expand_mode": "balanced",
+  "max_query_terms": 5,
+  "fetch_size_multiplier": 4,
+  "fetch_min_results": 30,
   "embedding_filter": {
     "enabled": true,
     "model": "BAAI/bge-m3",
@@ -320,7 +324,7 @@ python scripts/feedback_cli.py --feedback "like:1,3; dislike:2#太偏NLP"
 - 例如用户设置 `12:00` 且时区为 `Asia/Shanghai`，就应直接创建：
   - `Cron: 0 12 * * *`
   - `Timezone: Asia/Shanghai`
-- 执行命令应保持简洁，直接运行日报脚本即可，不需要 `--only-due-now --due-window-minutes 15`。
+- 执行命令应保持简洁，直接运行日报脚本即可，不需要 `--only-due-now --due-window-minutes 75`。
 
 推荐命令：
 
@@ -360,7 +364,7 @@ OpenClaw cron / automation 文案可参考：
 
 ```text
 在 /home/USER_HOME/.openclaw/workspace/agent-daily-paper 执行：
-export PATH="/home/USER_HOME/miniconda3/bin:/home/USER_HOME/.nvm/versions/node/NODE_VERSION/bin:/usr/local/bin:/home/USER_HOME/.local/bin:/home/USER_HOME/.bun/bin:/usr/bin:/bin:/home/USER_HOME/.nvm/current/bin:/home/USER_HOME/.npm-global/bin:/home/USER_HOME/bin:/home/USER_HOME/.volta/bin:/home/USER_HOME/.asdf/shims:/home/USER_HOME/.fnm/current/bin:/home/USER_HOME/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown
+export PATH="/home/USER_HOME/miniconda3/bin:/home/USER_HOME/.nvm/versions/node/NODE_VERSION/bin:/usr/local/bin:/home/USER_HOME/.local/bin:/home/USER_HOME/.bun/bin:/usr/bin:/bin:/home/USER_HOME/.nvm/current/bin:/home/USER_HOME/.npm-global/bin:/home/USER_HOME/bin:/home/USER_HOME/.volta/bin:/home/USER_HOME/.asdf/shims:/home/USER_HOME/.fnm/current/bin:/home/USER_HOME/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 75 --emit-markdown
 ```
 
 其中：
@@ -390,12 +394,12 @@ timezone: Asia/Shanghai
 
 说明：
 - 对于 OpenClaw 这类平台，若已经能设置精确 cron，则推荐直接使用精确时间触发。
-- 上述 `--only-due-now --due-window-minutes 15` 模板更适合作为兼容型执行模板或共享轮询任务模板。
+- 上述 `--only-due-now --due-window-minutes 75` 模板更适合作为兼容型执行模板或共享轮询任务模板。
 
 只有在“一个共享任务需要兼容多个不同时间点订阅”或“平台不支持精确 cron”时，才退回轮询模式：
 
 ```bash
-python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 --emit-markdown
+python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 75 --emit-markdown
 ```
 
 ## GitHub Actions（可选远端方案）

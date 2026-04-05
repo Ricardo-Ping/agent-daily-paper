@@ -206,7 +206,7 @@ def main() -> int:
     print(f"Next: conda run -n {args.env_name} python scripts/doctor.py")
     print(
         f"Then: conda run -n {args.env_name} python scripts/instant_digest.py "
-        "--fields \"数据库优化器\" --limit 20 --time-window-hours 72"
+        "--fields \"数据库优化器\" --limit 10 --time-window-hours 72"
     )
     return 0
 

@@ -2,7 +2,7 @@
 """Prepare field settings from user free-form field names.
 
 Usage:
-  python scripts/prepare_fields.py --fields "数据库优化器, 推荐系统" --limit 20
+  python scripts/prepare_fields.py --fields "数据库优化器, 推荐系统" --limit 10
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1292,14 +1293,28 @@ def build_field_setting(
 
 
 def main() -> int:
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="Prepare field settings for run_digest.py")
     parser.add_argument("--fields", required=True, help="Comma-separated field names")
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--name", default="Auto Field Subscription", help="Subscription name")
     parser.add_argument("--id", default="auto-subscription", help="Subscription id")
     parser.add_argument("--push-time", default="09:00", help="Push time HH:MM")
     parser.add_argument("--timezone", default="Asia/Shanghai", help="Timezone")
     parser.add_argument("--time-window-hours", type=int, default=24)
+    parser.add_argument(
+        "--query-strategy",
+        default="category_first",
+        choices=["category_keyword_union", "keyword_union", "category_first", "hybrid"],
+        help="arXiv retrieval strategy. Default: category_first (lower request pressure)",
+    )
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-threshold", type=float, default=0.58)
     parser.add_argument("--embedding-top-k", type=int, default=120)
@@ -1347,7 +1362,7 @@ def main() -> int:
     parser.add_argument(
         "--seed-top-k",
         type=int,
-        default=20,
+        default=12,
         help="Top-k seed papers fetched from arXiv all-fields relevance per field",
     )
     parser.add_argument(
@@ -1463,9 +1478,12 @@ def main() -> int:
                 "time_window_hours": args.time_window_hours,
                 "field_settings": field_settings,
                 "field_profiles": field_profiles,
-                "query_strategy": "category_keyword_union",
+                "query_strategy": args.query_strategy,
                 "require_primary_category": True,
                 "category_expand_mode": args.category_expand_mode,
+                "max_query_terms": 5,
+                "fetch_size_multiplier": 4,
+                "fetch_min_results": 30,
                 "embedding_filter": {
                     "enabled": True,
                     "model": args.embedding_model,

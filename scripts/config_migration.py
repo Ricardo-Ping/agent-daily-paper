@@ -388,7 +388,7 @@ def validate_state_config(state: dict[str, Any]) -> tuple[list[str], list[str]]:
 def backup_json_file(path: Path) -> Path:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_suffix(path.suffix + f".bak.{ts}")
-    backup.write_text(path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    backup.write_bytes(path.read_bytes())
     return backup
 
 

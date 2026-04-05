@@ -53,7 +53,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 
 - `keywords` / `exclude_keywords`
 - `time_window_hours`
-- `query_strategy`（推荐 `category_keyword_union`）
+- `query_strategy`（默认推荐 `category_first`，低请求压力）
+- `max_query_terms` / `fetch_size_multiplier` / `fetch_min_results`（控制单次抓取压力）
 - `require_primary_category`（推荐 `true`）
 - `category_expand_mode`（`off/conservative/balanced/broad`）
 - `agent-categories-only`（仅使用 Agent 提供分类；缺失分类则报错）
@@ -84,7 +85,8 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 ## 检索与排序
 
 - 检索采用分层漏斗：
-  - 主分类 + 英文关键词并集召回（`query_strategy=category_keyword_union`）
+  - 低压默认：主分类检索（`query_strategy=category_first`）
+  - 高召回可选：主分类 + 英文关键词并集召回（`query_strategy=category_keyword_union`）
   - 主分类过滤（`require_primary_category=true`）
   - embedding 相似度过滤（`embedding_filter`）
   - 本地 reranker 重排（`agent_rerank`）
@@ -138,12 +140,12 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 精确 cron 示例：
   - `0 12 * * * (Asia/Shanghai)` -> `cd <repo> && conda run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
 - OpenClaw cron 兼容模板：
-  - `0 12 * * * (Asia/Shanghai)` + `export PATH="..." && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
+  - `0 12 * * * (Asia/Shanghai)` + `export PATH="..." && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 75 --emit-markdown`
 - 只有在平台不支持精确 cron，或者一个共享任务需要兼容多个时间点订阅时，才使用轮询模式：
-  - `python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 15 --emit-markdown`
+  - `python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 75 --emit-markdown`
 - GitHub Actions 仅是可选远端方案，不应作为“安装到本地 skill 后”的默认调度方式。
 - 即时推送（不依赖 Actions）：
-  - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 20 --time-window-hours 72`
+  - `python scripts/instant_digest.py --fields "数据库优化器,推荐系统" --limit 10 --time-window-hours 72`
   - 默认仅输出完整 Markdown 正文到聊天（不附加 JSON 摘要）
 - 记录用户反馈：
   - `python scripts/feedback_cli.py --feedback "+ 1,3; - 2#太泛"`
