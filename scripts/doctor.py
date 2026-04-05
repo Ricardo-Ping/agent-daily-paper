@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,127 @@ class CheckResult:
 
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _normalize_profile_lookup_key(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "").strip())
+    text = re.sub(r"\s+", " ", text)
+    return text.lower()
+
+
+def _is_english_term(term: str) -> bool:
+    t = str(term or "").strip()
+    return bool(t and re.fullmatch(r"[A-Za-z0-9\-\s]+", t))
+
+
+def _has_replacement_char(value: str) -> bool:
+    return "\ufffd" in str(value or "")
+
+
+def _auto_fix_hint_for_subscription(
+    sub: dict[str, Any],
+    config_path: Path,
+) -> str:
+    field_settings = sub.get("field_settings", []) if isinstance(sub.get("field_settings"), list) else []
+    profile_rows = sub.get("field_profiles", []) if isinstance(sub.get("field_profiles"), list) else []
+    src_fields: list[str] = []
+    for row in profile_rows:
+        if not isinstance(row, dict):
+            continue
+        v = str(row.get("field", "")).strip()
+        if v:
+            src_fields.append(v)
+    if not src_fields:
+        for row in field_settings:
+            if not isinstance(row, dict):
+                continue
+            v = str(row.get("name", "")).strip()
+            if v:
+                src_fields.append(v)
+    src_fields = list(dict.fromkeys(src_fields))
+    fields_text = ",".join(src_fields[:8]) if src_fields else "你的领域1,你的领域2"
+    cfg_text = str(config_path).replace("\\", "/")
+    return (
+        f"建议自动修复：python scripts/prepare_fields.py --fields \"{fields_text}\" --output \"{cfg_text}\"; "
+        "或手动将 field_settings[*].name 对齐为 field_profiles[*].canonical_en（英文）。"
+    )
+
+
+def check_field_profile_alignment(config_path: Path, migrated: dict[str, Any]) -> list[CheckResult]:
+    out: list[CheckResult] = []
+    subs = migrated.get("subscriptions", [])
+    if not isinstance(subs, list) or not subs:
+        return out
+
+    clean_count = 0
+    for idx, sub in enumerate(subs):
+        if not isinstance(sub, dict):
+            continue
+        sid = str(sub.get("id") or sub.get("name") or f"sub-{idx + 1}").strip()
+        field_settings = sub.get("field_settings", [])
+        profile_rows_raw = sub.get("field_profiles", [])
+        if not isinstance(field_settings, list) or not field_settings:
+            continue
+        profile_rows = [x for x in profile_rows_raw if isinstance(x, dict)] if isinstance(profile_rows_raw, list) else []
+
+        profile_map: dict[str, dict[str, Any]] = {}
+        for row in profile_rows:
+            canonical = str(row.get("canonical_en", "")).strip()
+            field_name = str(row.get("field", "")).strip()
+            if canonical:
+                profile_map.setdefault(_normalize_profile_lookup_key(canonical), row)
+            if field_name:
+                profile_map.setdefault(_normalize_profile_lookup_key(field_name), row)
+
+        mismatches: list[str] = []
+        positional_only: list[str] = []
+        suspect_garbled: list[str] = []
+        invalid_canonical: list[str] = []
+
+        for f_idx, item in enumerate(field_settings):
+            if not isinstance(item, dict):
+                continue
+            fs_name = str(item.get("name", "")).strip()
+            if not fs_name:
+                continue
+            profile = profile_map.get(_normalize_profile_lookup_key(fs_name))
+            used_positional_only = False
+            if profile is None and len(profile_rows) == len(field_settings) and f_idx < len(profile_rows):
+                profile = profile_rows[f_idx]
+                used_positional_only = True
+            if profile is None:
+                mismatches.append(fs_name)
+                if _has_replacement_char(fs_name):
+                    suspect_garbled.append(fs_name)
+                continue
+            if used_positional_only:
+                positional_only.append(fs_name)
+
+            canonical = str(profile.get("canonical_en", "")).strip()
+            if _has_replacement_char(fs_name) or _has_replacement_char(canonical):
+                suspect_garbled.append(fs_name)
+            if not canonical or not _is_english_term(canonical):
+                invalid_canonical.append(fs_name)
+
+        if not mismatches and not positional_only and not suspect_garbled and not invalid_canonical:
+            clean_count += 1
+            continue
+
+        parts: list[str] = []
+        if mismatches:
+            parts.append(f"field_settings 与 field_profiles 未匹配: {', '.join(mismatches[:6])}")
+        if positional_only:
+            parts.append(f"仅按位置兜底匹配（建议修正字段名）: {', '.join(list(dict.fromkeys(positional_only))[:6])}")
+        if suspect_garbled:
+            parts.append(f"疑似乱码（含替换字符或异常编码）: {', '.join(list(dict.fromkeys(suspect_garbled))[:6])}")
+        if invalid_canonical:
+            parts.append(f"canonical_en 缺失或非英文: {', '.join(list(dict.fromkeys(invalid_canonical))[:6])}")
+        parts.append(_auto_fix_hint_for_subscription(sub, config_path))
+        out.append(CheckResult("WARN", f"field/profile alignment ({sid})", " | ".join(parts)))
+
+    if clean_count == len([s for s in subs if isinstance(s, dict)]):
+        out.append(CheckResult("OK", "field/profile alignment", "field_settings 与 field_profiles 对齐正常"))
+    return out
 
 
 def check_file_exists(path: Path, name: str) -> CheckResult:
@@ -83,6 +206,7 @@ def check_subscriptions(config_path: Path) -> list[CheckResult]:
         out.append(CheckResult("WARN", "subscriptions validation", item))
     for item in errors:
         out.append(CheckResult("ERROR", "subscriptions validation", item))
+    out.extend(check_field_profile_alignment(config_path, migrated))
 
     return out
 

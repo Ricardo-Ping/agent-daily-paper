@@ -27,6 +27,7 @@ import re
 import threading
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -179,6 +180,47 @@ def _is_english_term(term: str) -> bool:
     if not t:
         return False
     return bool(re.fullmatch(r"[A-Za-z0-9\-\s]+", t))
+
+
+def _normalize_profile_lookup_key(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "").strip())
+    text = re.sub(r"\s+", " ", text)
+    return text.lower()
+
+
+def _has_replacement_char(value: str) -> bool:
+    return "\ufffd" in str(value or "")
+
+
+def _normalize_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _resolve_canonical_en(field_name: str, profile_canonical: str, english_hints: list[str]) -> str:
+    candidates = [_normalize_spaces(profile_canonical), _normalize_spaces(field_name)]
+    for item in candidates:
+        if item and _is_english_term(item) and not _has_replacement_char(item):
+            return item.lower()
+
+    tokens: list[str] = []
+    for hint in english_hints:
+        h = _normalize_spaces(hint)
+        if not h or _has_replacement_char(h):
+            continue
+        if not _is_english_term(h):
+            continue
+        words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{1,40}", h.lower()) if len(w) >= 3]
+        tokens.extend(words)
+    tokens = list(dict.fromkeys(tokens))
+    if tokens:
+        return " ".join(tokens[:4])
+
+    base = _normalize_spaces(profile_canonical) or _normalize_spaces(field_name)
+    reason = "contains replacement char" if _has_replacement_char(base) else "non-English"
+    raise ValueError(
+        f"Field '{field_name}' has invalid canonical_en ({reason}). "
+        "Please regenerate config via prepare_fields.py, or set an English canonical_en in field_profiles."
+    )
 
 
 def _expand_english_variants(keywords: list[str]) -> list[str]:
@@ -352,7 +394,7 @@ def fetch_arxiv_papers_union(
     except Exception:
         workers = 0
     if workers <= 0:
-        workers = min(8, len(queries))
+        workers = min(3, len(queries))
     workers = max(1, workers)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -565,6 +607,9 @@ def embedding_filter_papers(
     model_name = str(cfg.get("model", "BAAI/bge-m3")).strip() or "BAAI/bge-m3"
     threshold = float(cfg.get("threshold", 0.58))
     top_k = int(cfg.get("top_k", max(80, len(papers))))
+    auto_relax_on_empty = bool(cfg.get("auto_relax_on_empty", True))
+    min_keep = max(1, int(cfg.get("min_keep", 8)))
+    relax_threshold = float(cfg.get("relax_threshold", max(0.0, threshold - 0.12)))
     model = _load_embed_model(model_name)
     if model is None:
         return papers
@@ -611,11 +656,20 @@ def embedding_filter_papers(
     field_emb = [x / total_weight for x in field_emb]
 
     kept: list[Paper] = []
+    scored_all: list[Paper] = []
     for p, emb in zip(papers, paper_embs):
         sim = _cosine(field_emb, list(emb))
         p.embedding_score = sim
+        scored_all.append(p)
         if sim >= threshold:
             kept.append(p)
+
+    if not kept and auto_relax_on_empty and scored_all:
+        relaxed = [p for p in scored_all if p.embedding_score >= relax_threshold]
+        if not relaxed:
+            scored_all.sort(key=lambda x: x.embedding_score, reverse=True)
+            relaxed = scored_all[: min(len(scored_all), min_keep)]
+        kept = relaxed
 
     kept.sort(key=lambda x: x.embedding_score, reverse=True)
     if top_k > 0:
@@ -1788,17 +1842,19 @@ def run_subscription(
     if not field_settings:
         raise ValueError("No fields configured. Add field_settings or fields.")
     raw_profiles = sub.get("field_profiles", [])
+    profile_rows: list[dict[str, Any]] = []
     field_profile_map: dict[str, dict[str, Any]] = {}
     if isinstance(raw_profiles, list):
         for item in raw_profiles:
             if not isinstance(item, dict):
                 continue
+            profile_rows.append(item)
             canonical = str(item.get("canonical_en", "")).strip()
             field_cn = str(item.get("field", "")).strip()
             if canonical:
-                field_profile_map[canonical] = item
+                field_profile_map.setdefault(_normalize_profile_lookup_key(canonical), item)
             if field_cn:
-                field_profile_map.setdefault(field_cn, item)
+                field_profile_map.setdefault(_normalize_profile_lookup_key(field_cn), item)
 
     sub_key = subscription_key(sub)
     # Dedup history is now subscription-scoped only.
@@ -1817,14 +1873,33 @@ def run_subscription(
 
         query_strategy = str(sub.get("query_strategy", "category_keyword_union")).strip().lower()
         require_primary_category = bool(sub.get("require_primary_category", True))
+        try:
+            max_query_terms = int(sub.get("max_query_terms", 5))
+        except Exception:
+            max_query_terms = 5
+        max_query_terms = max(1, min(8, max_query_terms))
+        try:
+            fetch_size_multiplier = int(sub.get("fetch_size_multiplier", 4))
+        except Exception:
+            fetch_size_multiplier = 4
+        fetch_size_multiplier = max(2, min(8, fetch_size_multiplier))
+        try:
+            fetch_min_results = int(sub.get("fetch_min_results", 30))
+        except Exception:
+            fetch_min_results = 30
+        fetch_min_results = max(20, min(120, fetch_min_results))
 
-        for fs in field_settings:
+        for fs_idx, fs in enumerate(field_settings):
             cats_all = fs.categories or normalize_field_to_categories(fs.name)
             primary_cats = fs.primary_categories or cats_all
             # Use primary categories as the only retrieval/constraint categories.
             cats = list(primary_cats) if primary_cats else list(cats_all)
             inferred_terms = infer_terms_from_field(fs.name)
-            profile = field_profile_map.get(fs.name, {})
+            profile = field_profile_map.get(_normalize_profile_lookup_key(fs.name), {})
+            if not profile and len(profile_rows) == len(field_settings):
+                # Best-effort fallback for configs where field names are visually garbled
+                # but field_profiles keep the original order.
+                profile = profile_rows[fs_idx]
             profile_keywords = [str(x).strip() for x in profile.get("keywords", []) if str(x).strip()]
             profile_seed_keywords = [str(x).strip() for x in profile.get("seed_keywords", []) if str(x).strip()]
             profile_venues = [str(x).strip() for x in profile.get("venues", []) if str(x).strip()]
@@ -1834,7 +1909,6 @@ def run_subscription(
                 for p in seed_papers
                 if isinstance(p, dict)
             ]
-            canonical_en = str(profile.get("canonical_en", fs.name)).strip() or fs.name
             if relax_keywords:
                 keywords: list[str] = [fs.name] + inferred_terms + profile_seed_keywords + profile_keywords
             else:
@@ -1844,10 +1918,15 @@ def run_subscription(
                     )
                 )
             excludes = list(dict.fromkeys(global_excludes + fs.exclude_keywords))
+            canonical_en = _resolve_canonical_en(
+                field_name=fs.name,
+                profile_canonical=str(profile.get("canonical_en", "")).strip(),
+                english_hints=(keywords + fs.keywords + global_keywords + profile_keywords + profile_seed_keywords),
+            )
 
             strict_query = bool(sub.get("strict_query", False))
-            fetch_size = max(50, fs.limit * 8)
-            query_terms_en = english_query_terms(canonical_en, keywords, max_terms=8)
+            fetch_size = max(fetch_min_results, fs.limit * fetch_size_multiplier)
+            query_terms_en = english_query_terms(canonical_en, keywords, max_terms=max_query_terms)
             if query_strategy in {"keyword_union", "category_keyword_union"}:
                 papers = fetch_arxiv_papers_union(
                     categories=cats,

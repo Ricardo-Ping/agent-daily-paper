@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # UTC poll only. Actual execution time is decided by subscription timezone + push_time in run_digest.py.
-    - cron: "*/10 * * * *"
+    - cron: "0 * * * *"
 
 permissions:
   contents: write
@@ -34,7 +34,7 @@ jobs:
           TRANSLATE_PROVIDER: ${{ vars.TRANSLATE_PROVIDER || 'auto' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python scripts/run_digest.py --only-due-now --due-window-minutes 15
+          python scripts/run_digest.py --only-due-now --due-window-minutes 75
 
       - name: Commit daily markdown if changed
         run: |
