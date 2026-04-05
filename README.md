@@ -503,3 +503,13 @@ python scripts/run_digest.py --config config/subscriptions.json --only-due-now -
 - 必须使用读者视角（“本文/该研究”），不要使用作者自述视角（“我们提出/我们设计”）。
 - 禁止逐句翻译论文原文；要做信息提炼、逻辑重组与批判性分析。
 - 优先引用方法与实验中的关键设计，不要只重复摘要内容。
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=Ricardo-Ping%2Fagent-daily-paper&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Ricardo-Ping/agent-daily-paper&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Ricardo-Ping/agent-daily-paper&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Ricardo-Ping/agent-daily-paper&type=date&legend=top-left" />
+ </picture>
+</a>
