@@ -501,5 +501,3 @@ python scripts/run_digest.py --config config/subscriptions.json --only-due-now -
 ## GitHub Stars
 
 [![GitHub stars](https://img.shields.io/github/stars/Ricardo-Ping/agent-daily-paper?style=for-the-badge&logo=github)](https://github.com/Ricardo-Ping/agent-daily-paper/stargazers)
-
-Star History 当前受 GitHub stargazer 数据访问限制影响，因此 README 不再嵌入其历史曲线。点击上方徽章可查看 GitHub 当前 Stars 和 stargazers 列表。
