@@ -1,12 +1,32 @@
-﻿# agent-daily-paper
+# agent-daily-paper
 
-`agent-daily-paper` 用于按研究领域聚合 arXiv 最新论文，并支持定时推送与即时推送两种运行模式。
+`agent-daily-paper` 是一个平台无关的 Agent Skill，用于按研究领域聚合、排序和解读 arXiv 最新论文，并支持定时推送与即时推送。核心 Python 流程不依赖 OpenClaw，可由 Codex、Claude Code 或其他能够读取 `SKILL.md` 并执行本地命令的 agent harness 使用。
 
 ## 给 Agent 的一句话安装指令
 
 可以直接对 Agent 说：
 
 `帮我安装 https://github.com/Ricardo-Ping/agent-daily-paper.git 这个 skill，然后安装 arxiv-digest-lab 虚拟环境，并进行初始化设置。`
+
+## 支持的平台
+
+| 平台 | Skill 入口 | 定时执行 |
+|---|---|---|
+| Codex | `$CODEX_HOME/skills/agent-daily-paper/SKILL.md` + `agents/openai.yaml` | 优先使用 Codex automation |
+| Claude Code | `.claude/skills/agent-daily-paper/SKILL.md` 或 `~/.claude/skills/agent-daily-paper/SKILL.md` | 平台 scheduler 或系统任务 |
+| OpenClaw | 指向本仓库的 `SKILL.md` | OpenClaw automation（可选） |
+| 其他 harness | 加载根目录 `SKILL.md` | harness scheduler 或系统任务 |
+
+如果仓库已经存在本地，无需重新克隆。可把平台的 skill 目录链接到本仓库，或让 harness 直接加载本仓库的 `SKILL.md`。平台只负责加载指令、执行命令、调度和回传；检索、去重、翻译、排序与 Markdown 归档均由仓库脚本完成。详细适配契约见 [`references/platform-adapters.md`](references/platform-adapters.md)。
+
+以当前 Windows 本地仓库为例，可在管理员终端或已开启开发者模式的终端创建目录链接（目标目录不存在时执行）：
+
+```powershell
+New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.codex\skills\agent-daily-paper" -Target "E:\自建Skill库\每日关注领域arXiv最新论文推送"
+New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\agent-daily-paper" -Target "E:\自建Skill库\每日关注领域arXiv最新论文推送"
+```
+
+若不希望创建链接，Codex 或通用 harness 也可以直接以当前仓库为工作目录读取 `SKILL.md`；不要复制 `config/` 和 `data/state.json` 到多个位置，否则不同宿主会产生独立订阅和去重状态。
 
 核心能力：
 - 多领域订阅与每领域独立数量上限（5-20）
@@ -354,47 +374,21 @@ Windows 任务计划程序可等价设置为：
 - 参数：`run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
 - 起始位置：仓库根目录
 
-如果 agent 平台自带 cron / automation，也应按同样原则创建：
+如果 agent 平台自带 scheduler / automation，也应按同样原则创建：
 
 - `12:00 + Asia/Shanghai` -> `0 12 * * * (Asia/Shanghai)`
 - `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
 - `21:45 + Asia/Shanghai` -> `45 21 * * * (Asia/Shanghai)`
 
-OpenClaw cron / automation 文案可参考：
+Codex、Claude Code、OpenClaw 与其他 harness 共用同一个执行契约：将工作目录设为仓库根目录，执行推荐命令，并把 stdout 中的完整 Markdown 回传。不要硬编码 OpenClaw workspace、用户名、Node 路径或飞书渠道。各平台的安装位置、调度方式和最小 harness 接口见 [`references/platform-adapters.md`](references/platform-adapters.md)。
 
-```text
-在 /home/USER_HOME/.openclaw/workspace/agent-daily-paper 执行：
-export PATH="/home/USER_HOME/miniconda3/bin:/home/USER_HOME/.nvm/versions/node/NODE_VERSION/bin:/usr/local/bin:/home/USER_HOME/.local/bin:/home/USER_HOME/.bun/bin:/usr/bin:/bin:/home/USER_HOME/.nvm/current/bin:/home/USER_HOME/.npm-global/bin:/home/USER_HOME/bin:/home/USER_HOME/.volta/bin:/home/USER_HOME/.asdf/shims:/home/USER_HOME/.fnm/current/bin:/home/USER_HOME/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 75 --emit-markdown
-```
-
-其中：
-- `USER_HOME` 替换为当前机器的真实用户名目录
-- `NODE_VERSION` 替换为本机实际 Node 版本目录
-- 如果环境变量已正确配置，可进一步精简为只保留 `conda run ...`
-
-如果需要同时写清“投递到 Feishu 当前会话”的标准模板，可补充为：
-
-```text
-delivery.mode: announce
-delivery.channel: feishu
-delivery.to: user:FEISHU_USER_ID
-cron: 0 12 * * *
-timezone: Asia/Shanghai
-```
-
-其中：
-- `FEISHU_USER_ID` 替换为当前接收人的真实 Feishu 用户 ID
-- `cron` 与 `timezone` 必须和用户配置的 `push_time + timezone` 一致
-
-如果使用上述 OpenClaw 执行模板，输出规则必须严格遵守：
+输出规则：
 
 1. 若 `reason=already_pushed_today`，返回：`今天该领域已推送过`
 2. 若无命中且未推送，返回：`当天该领域无最新论文`
 3. 若有论文，原样返回完整 Markdown 正文，不要摘要、不要 JSON、不要额外解释
 
-说明：
-- 对于 OpenClaw 这类平台，若已经能设置精确 cron，则推荐直接使用精确时间触发。
-- 上述 `--only-due-now --due-window-minutes 75` 模板更适合作为兼容型执行模板或共享轮询任务模板。
+`--only-due-now --due-window-minutes 75` 只适合作为共享轮询任务的兼容模式。平台能够精确调度时，直接在目标时间运行不带这两个参数的推荐命令。
 
 只有在“一个共享任务需要兼容多个不同时间点订阅”或“平台不支持精确 cron”时，才退回轮询模式：
 
@@ -504,12 +498,8 @@ python scripts/run_digest.py --config config/subscriptions.json --only-due-now -
 - 禁止逐句翻译论文原文；要做信息提炼、逻辑重组与批判性分析。
 - 优先引用方法与实验中的关键设计，不要只重复摘要内容。
 
-## Star History
+## GitHub Stars
 
-<a href="https://www.star-history.com/?repos=Ricardo-Ping%2Fagent-daily-paper&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Ricardo-Ping/agent-daily-paper&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Ricardo-Ping/agent-daily-paper&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Ricardo-Ping/agent-daily-paper&type=date&legend=top-left" />
- </picture>
-</a>
+[![GitHub stars](https://img.shields.io/github/stars/Ricardo-Ping/agent-daily-paper?style=for-the-badge&logo=github)](https://github.com/Ricardo-Ping/agent-daily-paper/stargazers)
+
+Star History 当前受 GitHub stargazer 数据访问限制影响，因此 README 不再嵌入其历史曲线。点击上方徽章可查看 GitHub 当前 Stars 和 stargazers 列表。

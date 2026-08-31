@@ -1,6 +1,6 @@
-﻿---
+---
 name: agent-daily-paper
-description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文，按重要性排序并以中英双语卡片形式推送（英文标题/中文标题/英文摘要/中文摘要/arXiv 链接）。支持每领域独立数量上限（5-20）、关键词高亮、NEW/UPDATED 版本标识、Markdown 存档，以及定时推送与即时推送双路径。首次使用时先完成订阅配置；领域可由 Agent 画像 JSON 自动补全英文名、关键词与会议列表。
+description: 在 Codex、Claude Code、OpenClaw 或其他 agent harness 中，按一个或多个研究领域检索、排序和解读 arXiv 最新论文，生成中英双语 Markdown 日报，并支持即时运行与定时订阅。首次使用时先完成环境和订阅配置。
 ---
 
 # Agent Daily Paper
@@ -11,21 +11,13 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
 - 环境引导命令：`python scripts/bootstrap_env.py --run-doctor`
 - taxonomy 本地知识库同步：`python scripts/sync_arxiv_taxonomy.py --output data/arxiv_taxonomy.json`
 - `push_time` 必须按用户 `timezone` 的本地时间理解，不能按 UTC 理解。
-- 如果用户要求定时推送，优先创建“精确到点”的 cron / 自动任务，而不是 15 分钟轮询。
+- 先确定当前 agent 平台支持哪种调度能力；不要假设存在 OpenClaw、特定目录、特定消息渠道或固定 shell。
+- 如果用户要求定时推送，优先使用当前平台的原生 automation；没有原生能力时再使用系统 cron、launchd、Windows 任务计划程序或 harness scheduler。
 - cron 表达式应直接由用户时间生成，例如：
   - `12:00 + Asia/Shanghai` -> `0 12 * * * (Asia/Shanghai)`
   - `08:30 + Asia/Shanghai` -> `30 8 * * * (Asia/Shanghai)`
-- 若用户使用 OpenClaw cron / automation，可优先采用以下执行模板：
-  - 在 `/home/USER_HOME/.openclaw/workspace/agent-daily-paper` 执行：
-  - `export PATH="/home/USER_HOME/miniconda3/bin:/home/USER_HOME/.nvm/versions/node/NODE_VERSION/bin:/usr/local/bin:/home/USER_HOME/.local/bin:/home/USER_HOME/.bun/bin:/usr/bin:/bin:/home/USER_HOME/.nvm/current/bin:/home/USER_HOME/.npm-global/bin:/home/USER_HOME/bin:/home/USER_HOME/.volta/bin:/home/USER_HOME/.asdf/shims:/home/USER_HOME/.fnm/current/bin:/home/USER_HOME/.local/share/pnpm" && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 15 --emit-markdown`
-  - 其中 `USER_HOME` 与 `NODE_VERSION` 必须替换为当前机器的真实路径
-  - 若要补充投递配置，可使用：
-    - `delivery.mode: announce`
-    - `delivery.channel: feishu`
-    - `delivery.to: user:FEISHU_USER_ID`
-    - `cron: 0 12 * * *`
-    - `timezone: Asia/Shanghai`
-- 若采用上述 OpenClaw 模板，输出必须严格遵守：
+- 安装、工作目录、调度与结果回传按平台处理。需要适配时读取 [references/platform-adapters.md](references/platform-adapters.md)，只读取当前平台对应的小节。
+- 无论由 Codex、Claude Code、OpenClaw 还是其他 harness 执行，结果语义保持一致：
   - `reason=already_pushed_today` -> `今天该领域已推送过`
   - 无命中且未推送 -> `当天该领域无最新论文`
   - 有论文 -> 原样返回完整 Markdown 正文，不要摘要、不要 JSON、不要解释
@@ -139,8 +131,7 @@ description: 支持用户按一个或多个研究领域订阅 arXiv 最新论文
   - `python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
 - 精确 cron 示例：
   - `0 12 * * * (Asia/Shanghai)` -> `cd <repo> && conda run -n arxiv-digest-lab python scripts/run_digest.py --config config/subscriptions.json --emit-markdown`
-- OpenClaw cron 兼容模板：
-  - `0 12 * * * (Asia/Shanghai)` + `export PATH="..." && conda run -n arxiv-digest-lab python scripts/run_digest.py --only-due-now --due-window-minutes 75 --emit-markdown`
+- 平台原生 automation：按 `push_time + timezone` 精确触发，并将仓库根目录设为工作目录；具体方式见 [references/platform-adapters.md](references/platform-adapters.md)。
 - 只有在平台不支持精确 cron，或者一个共享任务需要兼容多个时间点订阅时，才使用轮询模式：
   - `python scripts/run_digest.py --config config/subscriptions.json --only-due-now --due-window-minutes 75 --emit-markdown`
 - GitHub Actions 仅是可选远端方案，不应作为“安装到本地 skill 后”的默认调度方式。
