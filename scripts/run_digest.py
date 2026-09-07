@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 ARXIV_NS = {"arxiv": "http://arxiv.org/schemas/atom"}
 ARXIV_CODE_PATTERN = re.compile(r"\b[a-z]{2,}(?:\-[a-z]{2,})?\.[A-Za-z]{2,}\b")
@@ -2151,30 +2151,30 @@ def main() -> int:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         if config_path.exists():
             backup = backup_json_file(config_path)
-            print(f"[MIGRATE] Backed up config to: {backup}")
+            print(f"[MIGRATE] Backed up config to: {backup}", file=sys.stderr)
         save_json(config_path, config)
         msg = describe_changes("subscriptions config", config_changes)
         if msg:
-            print(msg)
+            print(msg, file=sys.stderr)
 
     state, state_changes = migrate_state_config(state)
     if state_changes:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         if state_path.exists():
             backup = backup_json_file(state_path)
-            print(f"[MIGRATE] Backed up state to: {backup}")
+            print(f"[MIGRATE] Backed up state to: {backup}", file=sys.stderr)
         save_json(state_path, state)
         msg = describe_changes("state", state_changes)
         if msg:
-            print(msg)
+            print(msg, file=sys.stderr)
 
     cfg_errors, cfg_warnings = validate_subscriptions_config(config)
     st_errors, st_warnings = validate_state_config(state)
     for w in cfg_warnings + st_warnings:
-        print(f"[WARN] {w}")
+        print(f"[WARN] {w}", file=sys.stderr)
     if cfg_errors or st_errors:
         for e in cfg_errors + st_errors:
-            print(f"[ERROR] {e}")
+            print(f"[ERROR] {e}", file=sys.stderr)
         return 1
 
     if bool(config.get("setup_required", False)):
@@ -2264,7 +2264,7 @@ def main() -> int:
             r.pop("markdown", None)
 
     print(json.dumps({"dry_run": args.dry_run, "results": results}, ensure_ascii=False, indent=2))
-    return 0 if results else 1
+    return 0
 
 
 if __name__ == "__main__":

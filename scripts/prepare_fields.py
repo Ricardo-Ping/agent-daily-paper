@@ -22,7 +22,7 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 ARXIV_NS = {"arxiv": "http://arxiv.org/schemas/atom"}
 
@@ -1469,6 +1469,7 @@ def main() -> int:
         merged_venues += highlight.get("venues", [])[:6]
 
     result = {
+        "schema_version": 2,
         "subscriptions": [
             {
                 "id": args.id,
