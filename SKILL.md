@@ -55,6 +55,7 @@ description: 在 Codex、Claude Code、OpenClaw 或其他 agent harness 中，�
 - `agent_rerank.model`（默认 `BAAI/bge-reranker-v2-m3`）/ `agent_rerank.top_k`
 - `highlight.title_keywords` / `highlight.authors` / `highlight.venues`
 - `insight_mode`（默认 `pdf`，可选 `abstract`）
+- `insight_provider`（默认 `script`，可选 `agent`）：`agent` 时脚本输出素材占位块，由 Agent 生成解读（见「Agent 解读执行流程」）
 - `insight_pdf_max_pages` / `insight_pdf_timeout_sec`
 - 翻译提供方 `TRANSLATE_PROVIDER`：`argos`(默认) / `openai`(需 `OPENAI_API_KEY` + `OPENAI_TRANSLATE_MODEL`) / `auto` / `none`
 
@@ -104,6 +105,26 @@ description: 在 Codex、Claude Code、OpenClaw 或其他 agent harness 中，�
 - Feedback ID（稳定反馈标识）
 - Agent 解读：单段中文长文（默认不少于 500 字，基于 PDF 全文语义凝练，失败时回退摘要）
 - 解读内容必须自然覆盖：问题边界、方法主线、创新贡献；禁止关键词拼接式机械句
+
+### Agent 解读执行流程（`insight_provider = "agent"`）
+
+当 `field_settings[].insight_provider = "agent"` 时，`run_digest.py` 不做文本生成，而是按「提取 → 过滤 → Agent 生成」输出可替换占位块：
+
+1. **提取**：脚本用 pypdf 提取 PDF 文本，并保留英文摘要与 PDF 关键片段（Abstract / Introduction / Conclusion 切片）作为素材。
+2. **过滤**：脚本自动清除提取噪声——arXiv 编号、邮箱、ACM "Authors' Contact Information"、license 块、DBLP/页眉/孤立页码、参考文献区截断、跨 span 与句级重复（`_clean_pdf_text` / `_focus_pdf_text` / `_dedup_sentences`）。素材中不得残留上述噪声。
+3. **Agent 生成**：脚本在日报中输出占位结构：
+   - `<!-- AGENT_INSIGHT_START:{arxiv_id} -->`
+   - 指令行：解读由 Agent 生成（按「研究问题 / 核心方法 / 创新贡献」输出不少于 300 字中文解读）
+   - 素材块：英文摘要 + PDF 关键片段
+   - `<!-- AGENT_INSIGHT_END:{arxiv_id} -->`
+   
+   Agent（本 skill 的执行者）必须逐篇生成解读，并用解读正文**替换整个占位块**（含素材与指令，不得保留注释、素材或指令文本）；最终日报只包含解读正文。
+
+Agent 解读质量要求：
+- 读者视角（"本文/该研究"），禁止作者自述视角（"我们提出/我们设计"）
+- 自然覆盖：研究问题（问题是什么、为何重要、现有局限）、核心方法（关键机制与设计）、创新贡献（实证结果与意义）
+- 不少于 300 字；禁止机械拼接或逐句翻译原文
+- 推送时须与 `output/daily/*.md` 逐字一致地原样返回完整正文
 
 命名规则：`<领域1>_<领域2>_<YYYY-MM-DD>.md`
 

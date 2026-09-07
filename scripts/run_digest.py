@@ -394,7 +394,7 @@ def fetch_arxiv_papers_union(
     except Exception:
         workers = 0
     if workers <= 0:
-        workers = min(3, len(queries))
+        workers = min(2, len(queries))
     workers = max(1, workers)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -405,8 +405,9 @@ def fetch_arxiv_papers_union(
         for future in as_completed(future_to_query):
             try:
                 chunk = future.result()
-            except Exception:
+            except Exception as exc:
                 # Best-effort union recall: skip failed query and keep others.
+                print(f"[WARN] arXiv query failed ({future_to_query[future]}): {exc}", file=sys.stderr)
                 continue
             for p in chunk:
                 k = f"{p.arxiv_id}:{p.version}"
@@ -1380,6 +1381,83 @@ def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = 20) -> str | None:
         return None
 
 
+_ARXIV_META_LINE_RE = re.compile(
+    r"(?im)^\s*"
+    r"(arxiv[:\s\-]*\s*[a-z\-]*\.?\s*\d{4}\.\d{4,5}[^\r\n]*|"
+    r"[A-Za-z0-9_.+\-]+@[A-Za-z0-9_.\-]+\.[A-Za-z]{2,}[^\r\n]*|"
+    r"index\s+terms?[^\r\n]*|"
+    r"keywords?[^\r\n]*|"
+    r"submitted\s+to[^\r\n]*)"
+    r"\s*$",
+)
+
+
+def _clean_pdf_text(raw: str) -> str:
+    """Remove arXiv template metadata, headers/footers, and noise lines.
+
+    Extraction stays on pypdf's default mode so both single-column and
+    two-column PDFs are handled; cleaning filters the invalid lines that
+    commonly leak in (arXiv ids, emails, page numbers, Index Terms,
+    references, symbol-only garbled lines, duplicates).
+    """
+    if not raw:
+        return ""
+    text = _ARXIV_META_LINE_RE.sub("", raw)
+    m = re.search(r"(?im)^\s*references?\s*$", text)
+    if m:
+        text = text[: m.start()]
+    # Cut trailing ACM contact/license blocks even when they sit mid-line.
+    for pat in (
+        r"authors[\u2019']?\s+contact\s+information",
+        r"this\s+work\s+is\s+licensed",
+        r"creative\s+commons\s+attribution",
+    ):
+        mm = re.search(pat, text, re.I)
+        if mm:
+            text = text[: mm.start()]
+            break
+    kept: list[str] = []
+    seen: set[str] = set()
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if re.fullmatch(r"\d{1,3}", s):  # bare page numbers
+            continue
+        if re.match(r"^\d{2,3}:\d{1,3}\b", s):  # ACM page headers like "348:2 Authors"
+            continue
+        if re.search(r"corresponding\s+author", s, re.I):  # arXiv corresponding-author footers
+            continue
+        if re.fullmatch(r"[^A-Za-z0-9\u4e00-\u9fff]{6,}", s):  # symbol-only lines
+            continue
+        s = re.sub(r"[A-Za-z0-9_.+\-]+@[A-Za-z0-9_.\-]+\.[A-Za-z]{2,}", "", s)  # emails mid-line
+        s = s.strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(s)
+    return "\n".join(kept)
+
+
+def _dedup_sentences(text: str) -> str:
+    """Drop repeated sentences while preserving order (PDF extraction artifacts)."""
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in parts:
+        key = re.sub(r"[^a-z]", "", s.strip().lower())[:80]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return " ".join(out)
+
+
 def _focus_pdf_text(raw: str) -> str:
     text = " ".join((raw or "").split())
     # Fix common PDF extraction artifact: split words like "de- pendencies".
@@ -1389,28 +1467,43 @@ def _focus_pdf_text(raw: str) -> str:
     if not text:
         return ""
     lower = text.lower()
-    picks: list[str] = []
-
-    idx_abs = lower.find("abstract")
-    if idx_abs >= 0:
-        picks.append(text[idx_abs: idx_abs + 2500])
-
-    idx_intro = lower.find("introduction")
-    if idx_intro >= 0:
-        picks.append(text[idx_intro: idx_intro + 3000])
-
-    idx_method = lower.find("method")
-    if idx_method >= 0:
-        picks.append(text[idx_method: idx_method + 3500])
-
-    idx_concl = lower.find("conclusion")
-    if idx_concl >= 0:
-        left = max(0, idx_concl - 2000)
-        picks.append(text[left: idx_concl + 3500])
-
-    if not picks:
-        picks.append(text[:12000])
-    return " ".join(picks)[:20000]
+    markers = [
+        ("introduction", 0, 2000),
+        ("conclusion", -1800, 2600),
+    ]
+    spans: list[tuple[int, int]] = []
+    # Abstract span: page head up to just before the Introduction section title,
+    # so it never overlaps the introduction slice.
+    intro_m = re.search(r"(?i)\bintroduction\b", text)
+    abs_end = intro_m.start() if intro_m else 2200
+    abs_start = 0
+    abs_label = re.search(r"(?im)^\s*abstract\b", text)
+    if abs_label:
+        abs_start = abs_label.start()
+    spans.append((abs_start, max(abs_start + 1, min(len(text), abs_end))))
+    for kw, before, after in markers:
+        idx = lower.find(kw)
+        if idx < 0:
+            continue
+        start = max(0, idx - before)
+        end = min(len(text), idx + after)
+        overlap = False
+        for s, e in spans:
+            if start >= s and end <= e:
+                overlap = True
+                break
+            inter = max(0, min(end, e) - max(start, s))
+            if inter > 0 and inter / max(1, min(end - start, e - s)) > 0.4:
+                overlap = True
+                break
+        if overlap:
+            continue
+        spans.append((start, end))
+    if not spans:
+        spans = [(0, min(len(text), 12000))]
+    picked = " ".join(text[s:e].strip() for s, e in spans)
+    picked = _dedup_sentences(picked)
+    return picked[:20000]
 
 
 def _load_pdf_focus_text(arxiv_id: str, max_pages: int, timeout_sec: int) -> str | None:
@@ -1421,6 +1514,9 @@ def _load_pdf_focus_text(arxiv_id: str, max_pages: int, timeout_sec: int) -> str
     if not pdf_bytes:
         return None
     raw = _extract_pdf_text(pdf_bytes, max_pages=max_pages)
+    if not raw:
+        return None
+    raw = _clean_pdf_text(raw)
     if not raw:
         return None
     focus = _focus_pdf_text(raw)
@@ -1548,11 +1644,26 @@ def summarize_paper_insight(
     insight_lang: str = "zh",
     insight_min_chars: int = 300,
     insight_embed_model: str = "BAAI/bge-m3",
+    insight_provider: str = "script",
 ) -> tuple[str, str, str]:
     mode = (insight_mode or "pdf").strip().lower()
     lang = (insight_lang or "zh").strip().lower()
     min_chars = max(120, int(insight_min_chars))
     source_min_chars = max(1200, min_chars * 4)
+    provider = (insight_provider or "script").strip().lower()
+    if provider == "agent":
+        abstract_material = _clean_summary_text(paper.abstract_en or "")
+        pdf_material = ""
+        if mode == "pdf":
+            pdf_material = (
+                _load_pdf_focus_text(
+                    paper.arxiv_id,
+                    max_pages=insight_pdf_max_pages,
+                    timeout_sec=insight_pdf_timeout_sec,
+                )
+                or ""
+            )
+        return abstract_material, pdf_material, ""
     if mode == "pdf":
         pdf_text = _load_pdf_focus_text(
             paper.arxiv_id,
@@ -1714,6 +1825,7 @@ def render_markdown(
         author_text = ", ".join(authors) + (" et al." if len(p.authors) > 3 else "")
         updated_local = to_local(p.updated, tz_name).strftime("%Y-%m-%d %H:%M")
         flags = [p.status] + p.highlight_tags
+        insight_provider = str(sub.get("insight_provider", "script")).strip().lower()
         problem, core, innovation = summarize_paper_insight(
             p,
             insight_mode=insight_mode,
@@ -1722,13 +1834,27 @@ def render_markdown(
             insight_lang=insight_lang,
             insight_min_chars=insight_min_chars,
             insight_embed_model=insight_embed_model,
+            insight_provider=insight_provider,
         )
-        insight_paragraph = _build_insight_paragraph(
-            problem=problem,
-            core=core,
-            innovation=innovation,
-            min_chars=insight_paragraph_min_chars,
-        )
+        if insight_provider == "agent":
+            insight_lines = [
+                f"<!-- AGENT_INSIGHT_START:{p.arxiv_id} -->",
+                "解读由 Agent 生成：请基于以下素材，按「研究问题 / 核心方法 / 创新贡献」输出不少于 300 字的中文解读（读者视角，禁止机械拼接原文句子）。",
+                "",
+                "素材-英文摘要：",
+                problem or "(无)",
+            ]
+            if core:
+                insight_lines.extend(["", "素材-PDF关键片段：", core])
+            insight_lines.append(f"<!-- AGENT_INSIGHT_END:{p.arxiv_id} -->")
+            insight_paragraph = "\n".join(insight_lines)
+        else:
+            insight_paragraph = _build_insight_paragraph(
+                problem=problem,
+                core=core,
+                innovation=innovation,
+                min_chars=insight_paragraph_min_chars,
+            )
         return [
             f"## {i}. {p.title_en}",
             "",
@@ -2234,7 +2360,7 @@ def main() -> int:
             )
             results.append(res)
             has_real_run = True
-            if not args.dry_run:
+            if not args.dry_run and int(res.get("selected_count", 0) or 0) > 0:
                 _, local_date = is_due_now(sub, now_utc, args.due_window_minutes)
                 last_push_date_by_sub[sub_key] = local_date
         except Exception as exc:
