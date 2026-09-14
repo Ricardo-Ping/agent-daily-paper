@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
@@ -295,13 +296,45 @@ def build_search_query(categories: list[str], keywords: list[str], strict: bool 
     return f"({cat_query}) {connector} {kw_query}"
 
 
-def http_get(url: str, params: dict[str, Any], retries: int = 2) -> str:
+
+_ARXIV_API_LOCK = threading.Lock()
+_ARXIV_LAST_CALL = 0.0
+ARXIV_MIN_INTERVAL = 3.0  # arXiv API: ~1 request per 3 seconds
+
+
+def throttle_arxiv_api() -> None:
+    global _ARXIV_LAST_CALL
+    with _ARXIV_API_LOCK:
+        wait = ARXIV_MIN_INTERVAL - (time.time() - _ARXIV_LAST_CALL)
+        if wait > 0:
+            time.sleep(wait)
+        _ARXIV_LAST_CALL = time.time()
+
+
+def http_get(url: str, params: dict[str, Any], retries: int = 3) -> str:
     full_url = f"{url}?{urlencode(params)}"
     for attempt in range(retries + 1):
         try:
-            req = Request(full_url, headers={"User-Agent": "agent-daily-paper/1.0"})
-            with urlopen(req, timeout=25) as resp:
+            req = Request(
+                full_url,
+                headers={"User-Agent": "agent-daily-paper/1.1 (+https://github.com/Ricardo-Ping/agent-daily-paper)"},
+            )
+            with urlopen(req, timeout=30) as resp:
                 return resp.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            if attempt >= retries:
+                raise
+            if exc.code == 429:
+                # arXiv rate limit: short backoff then give up fast so the
+                # listing-page fallback can take over quickly.
+                retry_after = exc.headers.get("Retry-After")
+                try:
+                    wait = min(8.0, float(retry_after)) if retry_after else 5.0 * (attempt + 1)
+                except Exception:
+                    wait = 5.0 * (attempt + 1)
+                time.sleep(wait)
+            else:
+                time.sleep(2 ** attempt)
         except Exception:
             if attempt >= retries:
                 raise
@@ -310,6 +343,7 @@ def http_get(url: str, params: dict[str, Any], retries: int = 2) -> str:
 
 
 def fetch_arxiv_papers(search_query: str, source_field: str, max_results: int) -> list[Paper]:
+    throttle_arxiv_api()
     xml_text = http_get(
         ARXIV_API,
         {
@@ -369,6 +403,134 @@ def fetch_arxiv_papers(search_query: str, source_field: str, max_results: int) -
     return papers
 
 
+
+# --- arXiv main-site fallback (unaffected by export API rate limits) ---
+ARXIV_LIST_URL = "https://arxiv.org/list/{cat}/recent"
+ARXIV_ABS_URL = "https://arxiv.org/abs/{arxiv_id}"
+ARXIV_UA = "agent-daily-paper/1.1 (+https://github.com/Ricardo-Ping/agent-daily-paper)"
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+)}
+
+
+def _parse_list_date(text: str) -> datetime | None:
+    m = re.match(r"(?:\w{3}, )?(\d{1,2}) (\w{3}) (\d{4})", text.strip())
+    if not m:
+        return None
+    mon = _MONTHS.get(m.group(2))
+    if not mon:
+        return None
+    return datetime(int(m.group(3)), mon, int(m.group(1)), 12, 0, tzinfo=timezone.utc)
+
+
+def http_get_text(url: str, timeout: int = 30) -> str:
+    throttle_arxiv_api()
+    req = Request(url, headers={"User-Agent": ARXIV_UA})
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _parse_list_page(html: str) -> list[tuple[str, str, datetime]]:
+    out: list[tuple[str, str, datetime]] = []
+    cur_date: datetime | None = None
+    pattern = re.compile(r"<h3>(.*?)</h3>|(<dt>.*?</dt>\s*<dd>.*?</dd>)", re.S)
+    for m in pattern.finditer(html):
+        if m.group(1):
+            dtext = re.sub(r"\(.*?\)", "", m.group(1)).strip()
+            cur_date = _parse_list_date(dtext)
+        elif m.group(2):
+            block = m.group(2)
+            idm = re.search(r'href\s*=\s*"/abs/(\d{4}\.\d{4,5})"', block)
+            tm = re.search(r"list-title[^>]*>(.*?)</div>", block, re.S)
+            title = re.sub(r"<[^>]+>", " ", tm.group(1)) if tm else ""
+            title = re.sub(r"^Title:\s*", "", re.sub(r"\s+", " ", title)).strip()
+            if idm and cur_date:
+                out.append((idm.group(1), title, cur_date))
+    return out
+
+
+def fetch_arxiv_abs_paper(
+    arxiv_id: str,
+    source_field: str,
+    default_cat: str,
+    fallback_date: datetime | None = None,
+) -> Paper | None:
+    try:
+        html = http_get_text(ARXIV_ABS_URL.format(arxiv_id=arxiv_id))
+    except Exception as exc:
+        print(f"[WARN] arXiv abs fetch failed ({arxiv_id}): {exc}", file=sys.stderr)
+        return None
+
+    def grab(pat: str) -> str:
+        m = re.search(pat, html, re.S)
+        if not m:
+            return ""
+        v = re.sub(r"<[^>]+>", " ", m.group(1))
+        return re.sub(r"\s+", " ", v).strip()
+
+    title = re.sub(r"^Title:\s*", "", grab(r'<h1 class="title mathjax">(.*?)</h1>'))
+    abstract = re.sub(r"^Abstract:\s*", "", grab(r'<blockquote class="abstract mathjax">(.*?)</blockquote>'))
+    am = re.search(r'<div class="authors">(.*?)</div>', html, re.S)
+    authors: list[str] = []
+    if am:
+        authors = [re.sub(r"<[^>]+>", "", a).strip() for a in re.findall(r"<a[^>]*>(.*?)</a>", am.group(1))]
+        authors = [a for a in authors if a]
+    primary = grab(r'<span class="primary_subject">(.*?)</span>') or default_cat
+    subs = grab(r'<td class="tablecell subjects">(.*?)</td>')
+    cats = re.findall(r"[a-z]{2,}(?:\-[a-z]{2,})?\.[A-Za-z]{2,}", subs) or [primary]
+    dm = re.search(r"\[Submitted on (.+?)\]", html)
+    submitted: datetime | None = None
+    if dm:
+        submitted = _parse_list_date(re.sub(r"\(.*?\)", "", dm.group(1)))
+    if submitted is None:
+        submitted = fallback_date or datetime.now(timezone.utc)
+    # Prefer the latest version date from the submission history, which is the
+    # paper's true most-recent activity; fall back to the listing page date.
+    hm = re.findall(r"\[v\d+\]\s*([A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2} \d{4})", html)
+    active_date: datetime | None = None
+    if hm:
+        active_date = _parse_list_date(hm[-1])
+    active_date = active_date or fallback_date or submitted
+    vers = re.findall(r'href="/abs/' + re.escape(arxiv_id) + r'v(\d+)"', html)
+    version = "v" + max(vers, key=int) if vers else "v1"
+    return Paper(
+        arxiv_id=arxiv_id,
+        version=version,
+        title_en=title,
+        abstract_en=abstract,
+        authors=authors,
+        categories=[x for x in cats if x],
+        primary_category=primary,
+        published=submitted,
+        updated=active_date,
+        url=f"https://arxiv.org/abs/{arxiv_id}",
+        source_field=source_field,
+    )
+
+
+def fetch_arxiv_papers_list(
+    categories: list[str],
+    source_field: str,
+    min_date: datetime,
+) -> list[Paper]:
+    seen: dict[str, tuple[str, datetime]] = {}
+    for cat in categories:
+        try:
+            html = http_get_text(ARXIV_LIST_URL.format(cat=cat))
+        except Exception as exc:
+            print(f"[WARN] arXiv list fetch failed ({cat}): {exc}", file=sys.stderr)
+            continue
+        for aid, _title, d in _parse_list_page(html):
+            if d >= min_date and aid not in seen:
+                seen[aid] = (cat, d)
+    papers: list[Paper] = []
+    for aid, (cat, d) in seen.items():
+        p = fetch_arxiv_abs_paper(aid, source_field, cat, fallback_date=d)
+        if p is not None:
+            papers.append(p)
+    return papers
+
+
 def fetch_arxiv_papers_union(
     categories: list[str],
     keyword_terms: list[str],
@@ -394,9 +556,11 @@ def fetch_arxiv_papers_union(
     except Exception:
         workers = 0
     if workers <= 0:
-        workers = min(2, len(queries))
+        workers = min(1, len(queries))
     workers = max(1, workers)
 
+    failed = 0
+    api_rate_limited = False
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_query = {
             executor.submit(fetch_arxiv_papers, q, source_field=source_field, max_results=per_query): q
@@ -406,13 +570,28 @@ def fetch_arxiv_papers_union(
             try:
                 chunk = future.result()
             except Exception as exc:
+                failed += 1
+                if isinstance(exc, HTTPError) and exc.code == 429:
+                    api_rate_limited = True
                 # Best-effort union recall: skip failed query and keep others.
                 print(f"[WARN] arXiv query failed ({future_to_query[future]}): {exc}", file=sys.stderr)
+                if api_rate_limited:
+                    # API is rate-limited for this IP: stop wasting requests and
+                    # fall back to the listing pages right away.
+                    for f2 in future_to_query:
+                        f2.cancel()
+                    break
                 continue
             for p in chunk:
                 k = f"{p.arxiv_id}:{p.version}"
                 if k not in merged:
                     merged[k] = p
+    if not merged and (failed == len(future_to_query) or api_rate_limited) and categories:
+        # All API queries failed (rate-limited): fall back to the main-site
+        # listing pages, which are not subject to export API throttling.
+        print("[WARN] All arXiv API queries failed; falling back to arXiv listing pages.", file=sys.stderr)
+        min_date = datetime.now(timezone.utc) - timedelta(hours=96)
+        return fetch_arxiv_papers_list(categories, source_field, min_date)
     return list(merged.values())
 
 
