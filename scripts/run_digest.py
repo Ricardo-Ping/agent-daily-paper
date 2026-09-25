@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
 import json
 import hashlib
+import html
 import math
 import os
 import re
@@ -443,7 +444,7 @@ def _parse_list_page(html: str) -> list[tuple[str, str, datetime]]:
             idm = re.search(r'href\s*=\s*"/abs/(\d{4}\.\d{4,5})"', block)
             tm = re.search(r"list-title[^>]*>(.*?)</div>", block, re.S)
             title = re.sub(r"<[^>]+>", " ", tm.group(1)) if tm else ""
-            title = re.sub(r"^Title:\s*", "", re.sub(r"\s+", " ", title)).strip()
+            title = html.unescape(re.sub(r"^Title:\s*", "", re.sub(r"\s+", " ", title)).strip())
             if idm and cur_date:
                 out.append((idm.group(1), title, cur_date))
     return out
@@ -466,6 +467,7 @@ def fetch_arxiv_abs_paper(
         if not m:
             return ""
         v = re.sub(r"<[^>]+>", " ", m.group(1))
+        v = html.unescape(v)
         return re.sub(r"\s+", " ", v).strip()
 
     title = re.sub(r"^Title:\s*", "", grab(r'<h1 class="title mathjax">(.*?)</h1>'))
